@@ -1,8 +1,12 @@
 // ==UserScript==
-// @name         Chess.com - Top 3 Analysis Arrows (Hibrido)
-// @namespace    https://github.com/chess-analysis-arrows
-// @version      9.0.0
-// @description  Flechas para los 3 mejores movimientos. Usa las lineas que muestra chess.com (Events, Play, Analysis) y, cuando solo entrega la barra de evaluacion (pestana Watch), las calcula con una segunda instancia del Stockfish que sirve chess.com.
+// @name         Chess.com - Top 3 Analysis Arrows
+// @namespace    https://github.com/hediondom/Chess.com-Arrows
+// @version      9.1.0
+// @description  Top-3 engine move arrows for chess.com analysis and watched games. Uses chess.com's own Stockfish in a Web Worker, so no extra app or Stockfish install is needed.
+// @homepageURL  https://github.com/hediondom/Chess.com-Arrows
+// @supportURL   https://github.com/hediondom/Chess.com-Arrows/issues
+// @downloadURL  https://github.com/hediondom/Chess.com-Arrows/raw/main/chess_analysis_arrows.user.js
+// @updateURL    https://github.com/hediondom/Chess.com-Arrows/raw/main/chess_analysis_arrows.user.js
 // @match        https://www.chess.com/*
 // @run-at       document-idle
 // @grant        none
@@ -17,13 +21,15 @@
   // ─────────────────────────── Configuración ───────────────────────────
   const CONFIG = {
     fallbackEngine: true,       // false = comportarse como la v6 (solo leer las líneas de chess.com)
+    keepAnalysisOnWhileWatching: true, // al mirar partidas, vuelve a encender el switch Analysis si chess.com lo apaga (p. ej. en una revancha)
     multiPv: 3,                 // líneas que calcula el motor alternativo
     maxDepth: 18,               // el motor alternativo se detiene al llegar a esta profundidad...
     maxTimeMs: 8000,            // ...o tras este tiempo por posición (lo que ocurra primero)
     minDepthToDraw: 8,          // no dibujar hasta esta profundidad (evita flechas que saltan)
-    graceNoPanelMs: 400,        // espera antes de usar el motor si la página no tiene panel de líneas
+    graceEngineSeenMs: 100,     // espera cuando el motor de chess.com ya trabaja y la página no tiene panel de líneas
+    graceNoPanelMs: 1000,       // espera máxima antes de usar el motor si la página no tiene panel de líneas
     graceEmptyPanelMs: 3000,    // espera si el panel de líneas existe pero está vacío
-    engineBootTimeoutMs: 20000, // tiempo máximo para que un motor responda al arrancar
+    engineBootTimeoutsMs: [2500, 6000, 12000], // si el worker no responde se reintenta el mismo motor con más margen; luego se pasa al siguiente
     engineIdleKillMs: 60000,    // apaga el worker del motor tras este tiempo sin usarse
     debug: false                // true = mensajes detallados en la consola
   };
@@ -48,7 +54,28 @@
   function info() { console.info.apply(console, [TAG].concat([].slice.call(arguments))); }
   function warn() { console.warn.apply(console, [TAG].concat([].slice.call(arguments))); }
 
+  // Momento (ms desde que empezó a cargar la página) en que ocurrió cada etapa por primera vez
+  const timeline = {};
+  function markOnce(name) { if (!(name in timeline)) timeline[name] = Math.round(performance.now()); }
+  markOnce('script');
+
   // ─────────────────────────── Tablero ───────────────────────────
+  // Tablero principal: el real de chess.com; si hubiera varios, el más grande en pantalla
+  function getMainBoard() {
+    const boards = document.querySelectorAll('wc-chess-board, chess-board');
+    if (boards.length === 1) return boards[0];
+    if (boards.length > 1) {
+      let best = null, bestArea = 0;
+      for (let i = 0; i < boards.length; i++) {
+        const r = boards[i].getBoundingClientRect();
+        const area = r.width * r.height;
+        if (area > bestArea) { bestArea = area; best = boards[i]; }
+      }
+      return best || boards[0];
+    }
+    return document.querySelector('.board'); // marcador mientras carga la página o diseños antiguos
+  }
+
   function squareToCoords(square, isFlipped) {
     if (!square || square.length < 2) return null;
     let col = square.charCodeAt(0) - 97;
@@ -264,7 +291,9 @@
         if (!s.className && s.textContent.trim()) { san = s.textContent.trim(); break; }
       }
     }
-    return (preMove + pieceLetter + san).replace(/\s+/g, '');
+    // En una coronación ("e8=" + figurín) la letra de la pieza va al final
+    const combined = san.trim().endsWith('=') ? (preMove + san + pieceLetter) : (preMove + pieceLetter + san);
+    return combined.replace(/\s+/g, '');
   }
 
   function isWhiteMoveText(moveText) {
@@ -320,10 +349,16 @@
     // Busca el ID 'analysis' (Events/Análisis) o 'evaluationSettings' (Play)
     const toggle = document.getElementById('analysis') || document.getElementById('evaluationSettings');
     if (toggle) return toggle.checked;
-    // Respaldo por si cambian el ID en el futuro
-    const anySwitch = document.querySelector('.cc-switch-checkbox_ec5ee9a');
+    // Respaldo por si cambian el ID en el futuro (la clase lleva un sufijo que chess.com regenera)
+    const anySwitch = document.querySelector('input[type="checkbox"][class*="cc-switch-checkbox"]');
     if (anySwitch) return anySwitch.checked;
     return false;
+  }
+
+  // El motor de chess.com ya está calculando: muestra "depth=N" junto al switch
+  function chessComEngineShowsDepth() {
+    const el = document.querySelector('wc-evaluation-depth, .analysis-options-depth');
+    return !!el && /=\s*\d/.test(el.textContent || '');
   }
 
   // ─────────────────────────── Posición para el motor alternativo ───────────────────────────
@@ -424,10 +459,55 @@
         const mode = typeof game.getMode === 'function' ? game.getMode() : null;
         if (mode && mode.name === 'playing') return false;
         const variant = typeof game.getVariant === 'function' ? game.getVariant() : null;
-        if (variant && variant !== 'chess' && variant !== 'chess960') return false;
+        if (variant && variant !== 'chess') return false; // solo ajedrez estándar
       } catch (e) { /* sin datos de modo: manda el switch */ }
     }
     return true;
+  }
+
+  // ─────────────────────────── Mantener Analysis encendido al mirar partidas ───────────────────────────
+  // chess.com apaga su switch Analysis cuando empieza otra partida (p. ej. una revancha). Si la última vez
+  // el usuario lo dejó encendido, se vuelve a encender solo, y únicamente mientras se mira una partida ajena.
+  const KEEP_KEY = 'top3arrows_keep_analysis';
+  let keepPref = null; // true = el usuario lo dejó encendido, false = lo apagó, null = todavía no eligió
+  try {
+    const saved = localStorage.getItem(KEEP_KEY);
+    keepPref = saved === '1' ? true : (saved === '0' ? false : null);
+  } catch (e) { /* sin almacenamiento */ }
+  let userSwitchClickAt = 0;
+  let lastAutoClickAt = 0;
+  let failedAutoClicks = 0;
+
+  function setKeepPref(on) {
+    keepPref = !!on;
+    try { localStorage.setItem(KEEP_KEY, keepPref ? '1' : '0'); } catch (e) { /* sin almacenamiento */ }
+  }
+
+  function isWatching(boardEl) {
+    const game = getGame(boardEl);
+    try {
+      const mode = game && typeof game.getMode === 'function' ? game.getMode() : null;
+      return !!(mode && mode.name === 'observing');
+    } catch (e) { return false; }
+  }
+
+  function keepAnalysisOn(boardEl) {
+    if (!CONFIG.keepAnalysisOnWhileWatching || keepPref !== true) return;
+    const toggle = document.getElementById('evaluationSettings');
+    if (!toggle) {
+      // chess.com todavía no dibujó el switch: se adelanta el arranque del worker (sin analizar nada)
+      if (CONFIG.fallbackEngine && isWatching(boardEl)) Engine.prewarm();
+      return;
+    }
+    if (toggle.disabled) return;
+    if (toggle.checked) { failedAutoClicks = 0; return; }
+    if (!isWatching(boardEl)) return;
+    const now = Date.now();
+    if (failedAutoClicks >= 3 || now - lastAutoClickAt < 1500 || now - userSwitchClickAt < 1500) return;
+    lastAutoClickAt = now;
+    failedAutoClicks++;
+    log('chess.com apagó Analysis; se vuelve a encender');
+    toggle.click();
   }
 
   // ─────────────────────────── Motor alternativo (Stockfish en un Web Worker) ───────────────────────────
@@ -438,6 +518,7 @@
     let bootSeq = 0;
     let bootTimer = null, idleTimer = null, stopTimer = null, commitTimer = null;
     let candidates = null, candIdx = 0, deadUntil = 0, crashes = 0;
+    let bootAttempt = 0, bootCount = 0;
 
     let searching = false;    // hay un "go" en curso (se espera su "bestmove")
     let discard = false;      // la búsqueda en curso ya no interesa (se envió "stop")
@@ -528,17 +609,21 @@
       if (state !== 'off' || Date.now() < deadUntil) return;
       if (!candidates) candidates = findEngineCandidates();
       if (candIdx >= candidates.length) {
-        candIdx = 0;
+        candIdx = 0; bootAttempt = 0;
         deadUntil = Date.now() + 30000;
         warn('ningún motor alternativo respondió; se reintenta en 30 s');
         return;
       }
       const cand = candidates[candIdx];
       const seq = ++bootSeq;
+      const timeouts = CONFIG.engineBootTimeoutsMs;
+      const limit = timeouts[Math.min(bootAttempt, timeouts.length - 1)];
       state = 'booting';
       label = cand.label;
-      log('arrancando motor:', label);
-      bootTimer = setTimeout(() => { if (seq === bootSeq) failCandidate('sin respuesta'); }, CONFIG.engineBootTimeoutMs);
+      bootCount++;
+      markOnce('engineBoot');
+      log('arrancando motor (intento ' + (bootAttempt + 1) + '):', label);
+      bootTimer = setTimeout(() => { if (seq === bootSeq) bootTimedOut(limit); }, limit);
       Promise.resolve()
         .then(() => cand.create())
         .then(w => {
@@ -554,10 +639,23 @@
         .catch(err => { if (seq === bootSeq) failCandidate((err && err.message) || String(err)); });
     }
 
+    // El worker no respondió a tiempo. A veces se queda colgado si arranca mientras la página carga,
+    // así que primero se reintenta el mismo motor con más margen y solo después se pasa al siguiente.
+    function bootTimedOut(limit) {
+      bootAttempt++;
+      if (bootAttempt < CONFIG.engineBootTimeoutsMs.length) {
+        log('el motor no respondió en ' + limit + ' ms; se reintenta');
+        killWorker();
+        boot();
+      } else {
+        failCandidate('sin respuesta');
+      }
+    }
+
     function failCandidate(reason) {
       warn('el motor "' + label + '" no arrancó (' + reason + '); se prueba el siguiente');
       killWorker();
-      candIdx++;
+      candIdx++; bootAttempt = 0;
       boot();
     }
 
@@ -567,7 +665,7 @@
       crashes++;
       killWorker();
       result = null;
-      if (crashes >= 2) { crashes = 0; candIdx++; }
+      if (crashes >= 2) { crashes = 0; candIdx++; bootAttempt = 0; }
       if (wantedFen) boot();
     }
 
@@ -588,6 +686,8 @@
         } else if (line === 'readyok') {
           clearTimeout(bootTimer); bootTimer = null;
           state = 'ready';
+          bootAttempt = 0;
+          markOnce('engineReady');
           info('motor alternativo listo:', label);
           pump();
         }
@@ -630,7 +730,11 @@
     function flushCommit() {
       clearTimeout(commitTimer); commitTimer = null;
       if (!result || discard || !pending.size) return false;
-      const lines = Array.from(pending.values()).sort((a, b) => a.rank - b.rank);
+      // A mitad de una iteración una jugada puede figurar en dos puestos: se conserva el mejor
+      const seenMoves = new Set();
+      const lines = Array.from(pending.values())
+        .sort((a, b) => a.rank - b.rank)
+        .filter(l => !seenMoves.has(l.move) && seenMoves.add(l.move));
       result.lines = lines;
       result.depth = lines[0].depth;
       return true;
@@ -680,11 +784,7 @@
       pump();
     }
 
-    function release() {
-      if (wantedFen !== null) {
-        wantedFen = null;
-        if (state === 'ready' && searching) interrupt();
-      }
+    function armIdleTimer() {
       if (state !== 'off' && !idleTimer) {
         idleTimer = setTimeout(() => {
           idleTimer = null;
@@ -693,20 +793,34 @@
       }
     }
 
+    // Arranca el worker sin analizar nada, para que esté listo cuando haga falta
+    function prewarm() {
+      if (state === 'off') boot();
+      if (wantedFen === null) armIdleTimer();
+    }
+
+    function release() {
+      if (wantedFen !== null) {
+        wantedFen = null;
+        if (state === 'ready' && searching) interrupt();
+      }
+      armIdleTimer();
+    }
+
     function getResult(fen) {
       return result && result.fen === fen && result.lines.length ? result : null;
     }
 
     function status() {
       return {
-        state, label, searching, discard, searchFen, wantedFen,
+        state, label, boots: bootCount, searching, discard, searchFen, wantedFen,
         depth: result ? result.depth : null,
         done: result ? result.done : null,
         lines: result ? result.lines.map(l => l.rank + ':' + l.move + ' ' + l.type + ' ' + l.value + ' d' + l.depth) : []
       };
     }
 
-    return { request, release, getResult, status, setOnUpdate: fn => { onUpdate = fn; } };
+    return { request, release, prewarm, getResult, status, setOnUpdate: fn => { onUpdate = fn; } };
   })();
 
   function formatEngineScore(line, whiteToMove) {
@@ -773,6 +887,8 @@
       const txtScore = document.createElementNS(SVG_NS, 'text');
       txtScore.setAttribute('x', lx); txtScore.setAttribute('y', ly + 0.5);
       txtScore.setAttribute('font-size', '2.2'); txtScore.setAttribute('font-weight', 'bold'); txtScore.setAttribute('text-anchor', 'middle'); txtScore.setAttribute('fill', '#fff');
+      // Borde oscuro para que el número se lea también sobre casillas claras
+      txtScore.setAttribute('stroke', '#14181f'); txtScore.setAttribute('stroke-width', '0.7'); txtScore.setAttribute('paint-order', 'stroke');
       txtScore.textContent = labelText;
       g.appendChild(txtScore);
     }
@@ -788,6 +904,7 @@
     if (overlay.getAttribute('data-sig') === sig) return;
     overlay.setAttribute('data-sig', sig);
     overlay.setAttribute('data-source', list.length ? source : 'none');
+    if (list.length && !('arrows' in timeline)) { markOnce('arrows'); timeline.arrowsFrom = source; }
     while (overlay.firstChild) overlay.removeChild(overlay.firstChild);
 
     // Se dibuja de la peor a la mejor para que la flecha 1 quede encima
@@ -805,10 +922,14 @@
 
   // ─────────────────────────── Bucle principal ───────────────────────────
   let scheduled = false;
-  let noLinesSince = 0;
+  let noLinesSince = 0;   // desde cuándo el análisis está activo sin líneas en la página
+  let depthSeenSince = 0; // desde cuándo se ve trabajar al motor de chess.com sin panel de líneas
   let graceTimer = null;
+  let graceTimerDue = 0;
   let lastSource = 'none';
   let lastError = '';
+
+  function resetWait() { noLinesSince = 0; depthSeenSince = 0; }
 
   function update() {
     scheduled = false;
@@ -820,23 +941,27 @@
   }
 
   function updateInner() {
-    const boardEl = document.querySelector('wc-chess-board, chess-board, .board');
-    if (!boardEl) { noLinesSince = 0; lastSource = 'none'; Engine.release(); return; }
+    const boardEl = getMainBoard();
+    if (!boardEl) { resetWait(); lastSource = 'none'; Engine.release(); return; }
+    if (getGame(boardEl)) markOnce('board');
+
+    keepAnalysisOn(boardEl);
 
     const overlay = getOrCreateOverlay(boardEl);
     if (!isAnalysisActive()) {
-      noLinesSince = 0; lastSource = 'off';
+      resetWait(); lastSource = 'off';
       Engine.release();
       render(overlay, null, false, 'off');
       return;
     }
+    markOnce('analysisOn');
 
     const isFlipped = boardEl.classList.contains('flipped');
 
     // 1) Camino normal: chess.com muestra las líneas de su motor → se leen del DOM
     const lines = getAnalysisLines();
     if (lines.length) {
-      noLinesSince = 0; lastSource = 'dom';
+      resetWait(); lastSource = 'dom';
       Engine.release();
       const pieces = getBoardPieces(boardEl);
       const legal = getLegalInfo(boardEl);
@@ -851,19 +976,34 @@
 
     // 2) chess.com no muestra líneas (p. ej. pestaña Watch: solo barra de evaluación) → motor alternativo
     if (!isFallbackAllowed(boardEl)) {
-      noLinesSince = 0; lastSource = 'none';
+      resetWait(); lastSource = 'none';
       Engine.release();
       render(overlay, null, isFlipped, 'none');
       return;
     }
 
-    // Se espera un momento por si chess.com todavía está cargando sus propias líneas
+    // Se espera un momento por si chess.com todavía está cargando sus propias líneas.
+    // En la vista Play/Watch (la que suele traer solo la barra) se arranca ya el worker,
+    // para que esté listo cuando termine la espera.
     const now = Date.now();
     if (!noLinesSince) noLinesSince = now;
-    const grace = hasLinesPanel() ? CONFIG.graceEmptyPanelMs : CONFIG.graceNoPanelMs;
-    const waited = now - noLinesSince;
-    if (waited < grace) {
-      if (!graceTimer) graceTimer = setTimeout(() => { graceTimer = null; schedule(); }, grace - waited + 30);
+    if (document.getElementById('evaluationSettings')) Engine.prewarm();
+    const panel = hasLinesPanel();
+    // Si el motor de chess.com ya trabaja y la página no tiene panel de líneas, es que solo
+    // va a mostrar la barra de evaluación: no hace falta agotar la espera máxima.
+    if (!panel && chessComEngineShowsDepth()) { if (!depthSeenSince) depthSeenSince = now; }
+    else depthSeenSince = 0;
+    const waitLeft = Math.min(
+      (panel ? CONFIG.graceEmptyPanelMs : CONFIG.graceNoPanelMs) - (now - noLinesSince),
+      depthSeenSince ? CONFIG.graceEngineSeenMs - (now - depthSeenSince) : Infinity
+    );
+    if (waitLeft > 0) {
+      const due = now + waitLeft + 20;
+      if (!graceTimer || due < graceTimerDue - 10) {
+        clearTimeout(graceTimer);
+        graceTimerDue = due;
+        graceTimer = setTimeout(() => { graceTimer = null; schedule(); }, waitLeft + 20);
+      }
       lastSource = 'none';
       render(overlay, null, isFlipped, 'none');
       return;
@@ -903,18 +1043,28 @@
   function init() {
     Engine.setOnUpdate(schedule);
 
+    // Un clic real del usuario sobre el switch Analysis de la vista Play/Watch fija su preferencia.
+    // Los clics que hace este script (o chess.com) no cuentan: no son eventos de confianza.
+    document.addEventListener('click', e => {
+      if (!e.isTrusted) return;
+      const t = e.target;
+      if (t && t.closest && (t.id === 'evaluationSettings' || t.closest('label[for="evaluationSettings"]'))) userSwitchClickAt = Date.now();
+    }, true);
+
     document.addEventListener('change', e => {
       const t = e.target;
-      if (t && (t.id === 'analysis' || t.id === 'evaluationSettings' || (t.classList && t.classList.contains('cc-switch-checkbox_ec5ee9a')))) {
-        schedule();
-      }
+      if (!t) return;
+      if (t.id === 'evaluationSettings' && Date.now() - userSwitchClickAt < 800) setKeepPref(t.checked);
+      if (t.id === 'analysis' || t.id === 'evaluationSettings' || classNameOf(t).indexOf('cc-switch-checkbox') !== -1) schedule();
     });
 
-    const WATCHED = 'wc-evaluation-lines, wc-chess-board, chess-board, .board, .engine-lines-engine-lines-redesign';
+    const WATCHED = 'wc-evaluation-lines, wc-chess-board, chess-board, .board, .engine-lines-engine-lines-redesign, .evaluation-settings-component, .analysis-options-component';
     const WATCHED_CLASSES = ['evaluation-lines-node', 'evaluation-lines-component', 'engine-line-node', 'engine-line-component', 'piece'];
+    const MOUNTS = '#evaluationSettings, #analysis, wc-evaluation-lines, wc-chess-board';
     const obs = new MutationObserver(mutations => {
       for (let i = 0; i < mutations.length; i++) {
-        const t = mutations[i].target;
+        const m = mutations[i];
+        const t = m.target;
         const el = t && (t.nodeType === 1 ? t : t.parentElement);
         if (!el || !el.closest) continue;
         if (el.closest('#' + OVERLAY_ID)) continue; // cambios hechos por este script
@@ -923,23 +1073,30 @@
           schedule();
           return;
         }
+        // chess.com acaba de montar el switch, el panel de líneas o el tablero
+        const added = m.addedNodes;
+        for (let j = 0; added && j < added.length; j++) {
+          const n = added[j];
+          if (n.nodeType === 1 && (n.matches(MOUNTS) || n.querySelector(MOUNTS))) { schedule(); return; }
+        }
       }
     });
 
     obs.observe(document.body, { childList: true, subtree: true, characterData: true, attributes: true, attributeFilter: ['class', 'style', 'checked'] });
 
-    setInterval(schedule, 1000);
+    setInterval(schedule, 500);
     schedule();
   }
 
   PAGE.__top3ArrowsHybrid = {
-    version: '9.0.0',
+    version: '9.1.0',
     config: CONFIG,
     refresh: update,
-    status: () => ({ source: lastSource, engine: Engine.status() })
+    // timeline: ms desde que empezó a cargar la página hasta cada etapa (script, board, analysisOn, engineBoot, engineReady, arrows)
+    status: () => ({ source: lastSource, keepAnalysis: keepPref, timeline: Object.assign({}, timeline), engine: Engine.status() })
   };
 
-  info('v9.0.0 (híbrido) cargado.');
+  info('v9.1.0 cargado.');
 
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', init);
   else init();

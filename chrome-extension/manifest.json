@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Chess.com - Flechas de Análisis Top 3",
-  "version": "9.0.0",
+  "version": "9.1.0",
   "description": "Muestra flechas dinámicas en el tablero para los 3 mejores movimientos calculados por el motor de análisis.",
   "permissions": ["activeTab"],
   "content_scripts": [

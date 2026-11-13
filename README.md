@@ -22,7 +22,8 @@ Use one of the two, not both.
 ### Userscript
 
 1. Install [Tampermonkey](https://www.tampermonkey.net/) or [Violentmonkey](https://violentmonkey.github.io/).
-2. Open [`chess_analysis_arrows.user.js`](https://github.com/USER/REPO/raw/main/chess_analysis_arrows.user.js) and confirm the install.
+2. Open [`chess_analysis_arrows.user.js`](https://github.com/hediondom/Chess.com-Arrows/raw/main/chess_analysis_arrows.user.js) and confirm the install.
+3. Remove any older copy of the script from the userscript manager, or only the first one loaded will run.
 
 The script must keep `@grant none`: it has to run in the page itself to reach the board and the engine.
 
@@ -40,7 +41,8 @@ Open a game and turn on chess.com's **Analysis** switch.
 
 - Green `1` is the best move, blue `2` the second, orange `3` the third.
 - The number next to each arrowhead is the evaluation from White's side, the same convention chess.com uses.
-- On pages without engine lines, the arrows appear about two seconds after the switch is turned on and keep improving up to depth 18.
+- On pages without engine lines, the arrows appear about half a second after the switch is turned on and keep improving up to depth 18.
+- While you watch a game, the script remembers whether you left **Analysis** on. chess.com switches it off when another game starts (a rematch, for example) and the script switches it back on. Turn it off yourself and it stays off.
 
 ## Settings
 
@@ -49,11 +51,14 @@ Edit the `CONFIG` block at the top of the script.
 | Option | Default | Meaning |
 |---|---|---|
 | `fallbackEngine` | `true` | Set to `false` to only read the lines chess.com shows |
+| `keepAnalysisOnWhileWatching` | `true` | Switch chess.com's Analysis back on when it resets it while you are watching |
 | `maxDepth` | `18` | The script's engine stops at this depth |
 | `maxTimeMs` | `8000` | or after this time per position, whichever comes first |
 | `minDepthToDraw` | `8` | No arrows are drawn below this depth, so they do not jump around |
-| `graceNoPanelMs` | `1500` | Wait before starting the engine when the page has no lines panel |
+| `graceEngineSeenMs` | `100` | Wait once chess.com's own engine is running and the page has no lines panel |
+| `graceNoPanelMs` | `1000` | Longest wait before starting the engine when the page has no lines panel |
 | `graceEmptyPanelMs` | `3000` | Wait when the lines panel exists but is empty |
+| `engineBootTimeoutsMs` | `[2500, 6000, 12000]` | How long to wait for the worker to answer on each attempt before trying the next engine |
 | `engineIdleKillMs` | `60000` | The worker is shut down after this long without use |
 | `debug` | `false` | Detailed messages in the console |
 
@@ -65,7 +70,7 @@ Edit the `CONFIG` block at the top of the script.
 
 ## Fair play
 
-The script's engine starts only when chess.com's Analysis switch exists and is on, and never while the board is in `playing` mode. chess.com does not offer that switch during your own live games, so the script stays idle there.
+The script's engine starts only when chess.com's Analysis switch exists and is on, and never while the board is in `playing` mode. chess.com does not offer that switch during your own live games, so the script stays idle there. The script only ever turns that switch back on while the board is in `observing` mode.
 
 Using engine help in your own games breaks chess.com's Fair Play policy. This tool is for studying, following broadcasts and watching other people's games.
 
@@ -73,8 +78,9 @@ Using engine help in your own games breaks chess.com's Fair Play policy. This to
 
 Open the browser console on chess.com:
 
-- `[Top3 Arrows] v9.0.0 (híbrido) cargado.` confirms the script is running.
+- `[Top3 Arrows] v9.1.0 cargado.` confirms the script is running.
 - `__top3ArrowsHybrid.status()` shows where the arrows come from (`dom`, `engine`, `none` or `off`) and the engine's state.
+- If the arrows are slow to appear, `status().timeline` tells which stage took the time. It gives the milliseconds from the start of the page load to each step: `script`, `board`, `analysisOn`, `engineBoot`, `engineReady` and `arrows`.
 - Double arrows mean two copies are active, for example the userscript and the extension, or an older version of the script.
 
 ## Disclaimer
