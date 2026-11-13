@@ -78,7 +78,7 @@ Using engine help in your own games breaks chess.com's Fair Play policy. This to
 
 Open the browser console on chess.com:
 
-- `[Top3 Arrows] v9.1.0 cargado.` confirms the script is running.
+- `[Top3 Arrows] v9.1.1 cargado.` confirms the script is running.
 - `__top3ArrowsHybrid.status()` shows where the arrows come from (`dom`, `engine`, `none` or `off`) and the engine's state.
 - If the arrows are slow to appear, `status().timeline` tells which stage took the time. It gives the milliseconds from the start of the page load to each step: `script`, `board`, `analysisOn`, `engineBoot`, `engineReady` and `arrows`.
 - Double arrows mean two copies are active, for example the userscript and the extension, or an older version of the script.

@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Chess.com - Top 3 Analysis Arrows
 // @namespace    https://github.com/hediondom/Chess.com-Arrows
-// @version      9.1.0
+// @version      9.1.1
 // @description  Top-3 engine move arrows for chess.com analysis and watched games. Uses chess.com's own Stockfish in a Web Worker, so no extra app or Stockfish install is needed.
 // @homepageURL  https://github.com/hediondom/Chess.com-Arrows
 // @supportURL   https://github.com/hediondom/Chess.com-Arrows/issues
@@ -846,7 +846,7 @@
   }
 
   function drawArrow(fromCoords, toCoords, config, labelText, rankNum) {
-    const g = document.createElementNS(SVG_NS, 'g');
+    let g = document.createElementNS(SVG_NS, 'g');
     const dx = toCoords.x - fromCoords.x; const dy = toCoords.y - fromCoords.y;
     const len = Math.sqrt(dx * dx + dy * dy); if (!len) return null;
     const rad = Math.atan2(dy, dx);
@@ -870,6 +870,10 @@
     poly.setAttribute('fill', config.headColor); poly.setAttribute('opacity', config.opacity);
     g.appendChild(poly);
 
+    // La insignia con el número va en un grupo aparte: render() las pone todas encima de las flechas
+    const body = g;
+    g = document.createElementNS(SVG_NS, 'g');
+
     const circ = document.createElementNS(SVG_NS, 'circle');
     circ.setAttribute('cx', fromCoords.x); circ.setAttribute('cy', fromCoords.y); circ.setAttribute('r', '2.4');
     circ.setAttribute('fill', config.labelBg); circ.setAttribute('stroke', '#fff'); circ.setAttribute('stroke-width', '0.6');
@@ -890,9 +894,17 @@
       // Borde oscuro para que el número se lea también sobre casillas claras
       txtScore.setAttribute('stroke', '#14181f'); txtScore.setAttribute('stroke-width', '0.7'); txtScore.setAttribute('paint-order', 'stroke');
       txtScore.textContent = labelText;
-      g.appendChild(txtScore);
+      body.appendChild(txtScore);
     }
-    return g;
+    return { body, badge: g };
+  }
+
+  // ¿b sale de la misma casilla que a y en la misma dirección? (una tapa a la otra)
+  function sameRay(a, b) {
+    if (a.from.x !== b.from.x || a.from.y !== b.from.y) return false;
+    const cross = a.dx * b.dy - a.dy * b.dx;
+    const dot = a.dx * b.dx + a.dy * b.dy;
+    return Math.abs(cross) < 0.01 && dot > 0;
   }
 
   // Dibuja la lista de flechas [{rank, from, to, label}]; solo toca el DOM si algo cambió
@@ -908,16 +920,38 @@
     while (overlay.firstChild) overlay.removeChild(overlay.firstChild);
 
     // Se dibuja de la peor a la mejor para que la flecha 1 quede encima
+    const items = [];
     list.slice().sort((a, b) => b.rank - a.rank).forEach(a => {
       const config = ARROW_CONFIG[a.rank - 1];
       if (!config) return;
       const from = squareToCoords(a.from, isFlipped);
       const to = squareToCoords(a.to, isFlipped);
-      if (from && to) {
-        const el = drawArrow(from, to, config, a.label, a.rank);
-        if (el) overlay.appendChild(el);
-      }
+      if (!from || !to) return;
+      const dx = to.x - from.x; const dy = to.y - from.y;
+      items.push({ a, config, from, to, dx, dy, len: dx * dx + dy * dy });
     });
+
+    // Flechas que salen de la misma casilla por la misma línea (p. ej. torre a c1, e1 y f1):
+    // la más larga va debajo y la más corta encima, así se ve un tramo de cada color.
+    for (let pass = 0; pass < items.length; pass++) {
+      for (let i = 0; i < items.length; i++) {
+        for (let j = i + 1; j < items.length; j++) {
+          if (items[i].len < items[j].len && sameRay(items[i], items[j])) {
+            const t = items[i]; items[i] = items[j]; items[j] = t;
+          }
+        }
+      }
+    }
+
+    const badges = [];
+    items.forEach(it => {
+      const el = drawArrow(it.from, it.to, it.config, it.a.label, it.a.rank);
+      if (!el) return;
+      overlay.appendChild(el.body);
+      badges.push({ rank: it.a.rank, node: el.badge });
+    });
+    // Las insignias al final, la del número 1 encima si comparten casilla
+    badges.sort((x, y) => y.rank - x.rank).forEach(b => overlay.appendChild(b.node));
   }
 
   // ─────────────────────────── Bucle principal ───────────────────────────
@@ -1089,14 +1123,14 @@
   }
 
   PAGE.__top3ArrowsHybrid = {
-    version: '9.1.0',
+    version: '9.1.1',
     config: CONFIG,
     refresh: update,
     // timeline: ms desde que empezó a cargar la página hasta cada etapa (script, board, analysisOn, engineBoot, engineReady, arrows)
     status: () => ({ source: lastSource, keepAnalysis: keepPref, timeline: Object.assign({}, timeline), engine: Engine.status() })
   };
 
-  info('v9.1.0 cargado.');
+  info('v9.1.1 cargado.');
 
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', init);
   else init();
