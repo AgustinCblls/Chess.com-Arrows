@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Chess.com - Top 3 Analysis Arrows
 // @namespace    https://github.com/hediondom/Chess.com-Arrows
-// @version      9.1.1
+// @version      9.4.0
 // @description  Top-3 engine move arrows for chess.com analysis and watched games. Uses chess.com's own Stockfish in a Web Worker, so no extra app or Stockfish install is needed.
 // @homepageURL  https://github.com/hediondom/Chess.com-Arrows
 // @supportURL   https://github.com/hediondom/Chess.com-Arrows/issues
@@ -22,9 +22,13 @@
   const CONFIG = {
     fallbackEngine: true,       // false = comportarse como la v6 (solo leer las líneas de chess.com)
     keepAnalysisOnWhileWatching: true, // al mirar partidas, vuelve a encender el switch Analysis si chess.com lo apaga (p. ej. en una revancha)
-    multiPv: 3,                 // líneas que calcula el motor alternativo
+    // Estos cuatro se cambian también desde el panel de ajustes (engranaje sobre el tablero) y se recuerdan
+    multiPv: 3,                 // flechas: líneas que calcula el motor alternativo y máximo que se dibuja (1-5)
     maxDepth: 18,               // el motor alternativo se detiene al llegar a esta profundidad...
     maxTimeMs: 8000,            // ...o tras este tiempo por posición (lo que ocurra primero)
+    hashMb: 16,                 // memoria (tabla hash) del motor alternativo, en MB
+    ownGearButton: false,       // true = además, engranaje propio flotante en la esquina del tablero (por si chess.com cambia su ventana de ajustes)
+    preferOwnEngine: true,      // true = flechas siempre del motor propio (como en Watch); las líneas de chess.com solo se usan mientras calcula. También en el panel
     minDepthToDraw: 8,          // no dibujar hasta esta profundidad (evita flechas que saltan)
     graceEngineSeenMs: 100,     // espera cuando el motor de chess.com ya trabaja y la página no tiene panel de líneas
     graceNoPanelMs: 1000,       // espera máxima antes de usar el motor si la página no tiene panel de líneas
@@ -37,8 +41,41 @@
   const ARROW_CONFIG = [
     { rank: 1, color: '#00d26a', headColor: '#00b058', opacity: 0.88, width: 3.2, labelBg: '#00d26a' },
     { rank: 2, color: '#38bdf8', headColor: '#0284c7', opacity: 0.78, width: 2.6, labelBg: '#0284c7' },
-    { rank: 3, color: '#fb923c', headColor: '#ea580c', opacity: 0.68, width: 2.2, labelBg: '#fb923c' }
+    { rank: 3, color: '#fb923c', headColor: '#ea580c', opacity: 0.68, width: 2.2, labelBg: '#fb923c' },
+    { rank: 4, color: '#a78bfa', headColor: '#7c3aed', opacity: 0.62, width: 2.0, labelBg: '#7c3aed' },
+    { rank: 5, color: '#f472b6', headColor: '#db2777', opacity: 0.58, width: 1.8, labelBg: '#db2777' }
   ];
+
+  // Ajustes que el usuario puede mover desde el panel; se guardan en localStorage
+  const SETTINGS_KEY = 'top3arrows_settings';
+  const HASH_STEPS = [16, 32, 64, 128, 256, 512];
+  const SETTING_DEFS = [
+    { key: 'multiPv', min: 1, max: 5, step: 1, fmt: v => String(v) },
+    { key: 'maxTimeMs', min: 1000, max: 30000, step: 1000, fmt: v => (v / 1000) + ' s' },
+    { key: 'maxDepth', min: 10, max: 40, step: 1, fmt: v => String(v) },
+    { key: 'hashMb', values: HASH_STEPS, fmt: v => v + ' MB' }
+  ];
+  function isValidSetting(def, v) {
+    if (typeof v !== 'number' || !isFinite(v)) return false;
+    return def.values ? def.values.indexOf(v) !== -1 : (v >= def.min && v <= def.max && v % def.step === 0);
+  }
+  (function loadSettings() {
+    try {
+      const saved = JSON.parse(localStorage.getItem(SETTINGS_KEY) || 'null');
+      if (saved && typeof saved === 'object') {
+        SETTING_DEFS.forEach(def => { if (isValidSetting(def, saved[def.key])) CONFIG[def.key] = saved[def.key]; });
+        if (typeof saved.preferOwnEngine === 'boolean') CONFIG.preferOwnEngine = saved.preferOwnEngine;
+      }
+    } catch (e) { /* ajustes dañados o sin almacenamiento: quedan los de CONFIG */ }
+  })();
+  function saveSettings() {
+    try {
+      const out = {};
+      SETTING_DEFS.forEach(def => { out[def.key] = CONFIG[def.key]; });
+      out.preferOwnEngine = !!CONFIG.preferOwnEngine;
+      localStorage.setItem(SETTINGS_KEY, JSON.stringify(out));
+    } catch (e) { /* sin almacenamiento: duran hasta recargar */ }
+  }
 
   const OVERLAY_ID = 'chess-top3-hybrid-arrows-overlay';
   const SVG_NS = 'http://www.w3.org/2000/svg';
@@ -220,23 +257,61 @@
       const moves = game.getLegalMoves();
       if (!Array.isArray(moves)) return null;
       const bySan = new Map();
+      const list = [];
       for (const m of moves) {
         if (!m || typeof m.san !== 'string' || typeof m.from !== 'string' || typeof m.to !== 'string') continue;
         const key = normalizeSan(m.san);
         if (!bySan.has(key)) bySan.set(key, { from: m.from, to: m.to });
+        list.push({ san: key, from: m.from, to: m.to });
       }
       const turnField = fen.split(' ')[1];
-      const result = { bySan, turnWhite: turnField === 'w' ? true : (turnField === 'b' ? false : null) };
+      const result = { bySan, list, turnWhite: turnField === 'w' ? true : (turnField === 'b' ? false : null) };
       legalCache = { fen, info: result };
       return result;
     } catch (e) { return null; }
   }
 
+  // Con chess.com en otro idioma las líneas usan las letras de pieza de ese idioma ("Ce7" = caballo a e7).
+  // Letras de rey, dama, torre, alfil y caballo, en ese orden.
+  const PIECE_LETTERS = { es: 'RDTAC', fr: 'RDTFC', de: 'KDTLS', it: 'RDTAC', pt: 'RDTBC', nl: 'KDTLP', pl: 'KHWGS', tr: 'ŞVKFA' };
+  function localizedSanToEnglish(san) {
+    const lang = (document.documentElement.lang || '').slice(0, 2).toLowerCase();
+    const letters = PIECE_LETTERS[lang];
+    if (!letters) return null;
+    const tr = c => { const i = letters.indexOf(c); return i === -1 ? null : 'KQRBN'[i]; };
+    let out = san;
+    if (/^[^a-hO0-9x]/.test(out)) {
+      const p = tr(out[0]);
+      if (!p) return null;
+      out = p + out.slice(1);
+    }
+    const promo = /=(.)$/.exec(out);
+    if (promo) {
+      const p = tr(promo[1]);
+      if (!p) return null;
+      out = out.slice(0, -1) + p;
+    }
+    return out === san ? null : out;
+  }
+
   function resolveLineMove(line, legal, pieces) {
-    const san = normalizeSan(line.moveText);
+    let san = normalizeSan(line.moveText);
     if (!san) return null;
+    let moveText = line.moveText;
     if (legal) {
-      const m = legal.bySan.get(san);
+      let m = legal.bySan.get(san);
+      if (!m) {
+        // 1) Traducir las letras según el idioma de la página
+        const en = localizedSanToEnglish(san);
+        if (en && legal.bySan.has(en)) { m = legal.bySan.get(en); san = en; }
+        if (en) moveText = en;
+      }
+      if (!m && /^[^a-hO0-9x]/.test(san)) {
+        // 2) Idioma sin tabla: vale si una sola jugada legal de pieza coincide en todo menos en la letra
+        const rest = san.replace(/^[^a-h0-9x]+/, '');
+        const same = legal.list.filter(l => /^[KQRBN]/.test(l.san) && l.san.slice(1) === rest);
+        if (same.length === 1) m = same[0];
+      }
       if (m) {
         if (san === 'O-O' || san === 'O-O-O') return { from: m.from, to: (san === 'O-O' ? 'g' : 'c') + m.from[1] };
         return { from: m.from, to: m.to };
@@ -244,7 +319,11 @@
       // La línea es de otra posición (chess.com todavía no la actualizó): no dibujar flechas viejas
       if (legal.turnWhite !== null && legal.turnWhite !== line.isWhite) return null;
     }
-    return findMoveSource(line.moveText, line.isWhite, pieces);
+    else {
+      const en = localizedSanToEnglish(san);
+      if (en) moveText = en;
+    }
+    return findMoveSource(moveText, line.isWhite, pieces);
   }
 
   // ─────────────────────────── Líneas que muestra chess.com ───────────────────────────
@@ -307,7 +386,7 @@
     // Estructura 1: Events y Play (evaluation-lines-component)
     const evalComponents = document.querySelectorAll('wc-evaluation-lines .evaluation-lines-component, .evaluation-lines-component');
     evalComponents.forEach((comp, idx) => {
-      if (idx >= 3) return;
+      if (idx >= CONFIG.multiPv) return;
       const scoreEl = comp.querySelector('.evaluation-lines-score');
       const score = scoreEl ? scoreEl.textContent.trim() : '';
       const firstMoveEl = comp.querySelector('.evaluation-lines-node[data-move-index="0"]') || comp.querySelector('.evaluation-lines-node');
@@ -323,7 +402,7 @@
     if (mainComponents.length) engineComponents = mainComponents;
 
     engineComponents.forEach((comp, idx) => {
-      if (idx >= 3) return;
+      if (idx >= CONFIG.multiPv) return;
       const scoreEl = comp.querySelector('.score-text-score');
       const score = scoreEl ? scoreEl.textContent.trim() : '';
       const firstMoveEl = comp.querySelector('.engine-line-node');
@@ -344,11 +423,21 @@
     return document.querySelector('wc-evaluation-lines, .evaluation-lines-component, .engine-lines-engine-lines-redesign, .engine-line-component') !== null;
   }
 
+  // En la vista Play/Watch el switch Analysis solo existe en la subpestaña de movimientos: al pasar
+  // a Chat o a otra pestaña chess.com lo quita de la página aunque el análisis siga encendido.
+  // Si la última vez que se vio estaba encendido y chess.com sigue mostrando su barra de evaluación
+  // (la retira al apagar el análisis), se considera encendido.
+  let lastSwitchOn = false;
+  function switchHiddenButOn() {
+    return lastSwitchOn && document.querySelector('wc-evaluation-bar') !== null;
+  }
+
   // VERIFICAR SI EL ANÁLISIS ESTÁ ENCENDIDO (COMPATIBLE CON TODAS LAS PÁGINAS)
   function isAnalysisActive() {
     // Busca el ID 'analysis' (Events/Análisis) o 'evaluationSettings' (Play)
     const toggle = document.getElementById('analysis') || document.getElementById('evaluationSettings');
-    if (toggle) return toggle.checked;
+    if (toggle) { lastSwitchOn = toggle.checked; return toggle.checked; }
+    if (switchHiddenButOn()) return true;
     // Respaldo por si cambian el ID en el futuro (la clase lleva un sufijo que chess.com regenera)
     const anySwitch = document.querySelector('input[type="checkbox"][class*="cc-switch-checkbox"]');
     if (anySwitch) return anySwitch.checked;
@@ -449,7 +538,8 @@
   function isFallbackAllowed(boardEl) {
     if (!CONFIG.fallbackEngine) return false;
     const toggle = document.getElementById('analysis') || document.getElementById('evaluationSettings');
-    if (!toggle || !toggle.checked) return false;
+    // Con el switch oculto (pestaña Chat, etc.) solo se sigue si se está mirando una partida ajena
+    if (toggle ? !toggle.checked : !(switchHiddenButOn() && isWatching(boardEl))) return false;
     // Solo sobre el tablero real, no sobre el marcador que chess.com pinta mientras carga la página
     const tag = (boardEl.tagName || '').toLowerCase();
     if (tag !== 'wc-chess-board' && tag !== 'chess-board') return false;
@@ -519,6 +609,7 @@
     let bootTimer = null, idleTimer = null, stopTimer = null, commitTimer = null;
     let candidates = null, candIdx = 0, deadUntil = 0, crashes = 0;
     let bootAttempt = 0, bootCount = 0;
+    let optsDirty = false, hashMax = Infinity;
 
     let searching = false;    // hay un "go" en curso (se espera su "bestmove")
     let discard = false;      // la búsqueda en curso ya no interesa (se envió "stop")
@@ -619,6 +710,7 @@
       const timeouts = CONFIG.engineBootTimeoutsMs;
       const limit = timeouts[Math.min(bootAttempt, timeouts.length - 1)];
       state = 'booting';
+      hashMax = Infinity;
       label = cand.label;
       bootCount++;
       markOnce('engineBoot');
@@ -680,8 +772,10 @@
     function handleLine(line) {
       if (!line) return;
       if (state === 'booting') {
+        const hm = /^option name Hash .*\bmax (\d+)/.exec(line);
+        if (hm) hashMax = parseInt(hm[1], 10);
         if (line === 'uciok') {
-          post('setoption name MultiPV value ' + CONFIG.multiPv);
+          applyOptions();
           post('isready');
         } else if (line === 'readyok') {
           clearTimeout(bootTimer); bootTimer = null;
@@ -740,7 +834,25 @@
       return true;
     }
 
+    // Envía al motor los ajustes actuales (solo se llama cuando no hay una búsqueda en curso)
+    function applyOptions() {
+      optsDirty = false;
+      post('setoption name MultiPV value ' + CONFIG.multiPv);
+      post('setoption name Hash value ' + Math.max(1, Math.min(CONFIG.hashMb, hashMax)));
+    }
+
+    // El usuario cambió un ajuste: se descarta el análisis actual y se repite con los valores nuevos
+    function reconfigure() {
+      optsDirty = true;
+      result = null;
+      clearTimeout(commitTimer); commitTimer = null;
+      if (state !== 'ready') return;
+      if (searching) { interrupt(); return; } // al llegar "bestmove", pump() vuelve a empezar
+      pump();
+    }
+
     function start(fen) {
+      if (optsDirty) applyOptions();
       searching = true; discard = false; searchFen = fen;
       pending = new Map();
       result = { fen, turn: fen.split(' ')[1] === 'b' ? 'b' : 'w', depth: 0, lines: [], done: false };
@@ -820,7 +932,7 @@
       };
     }
 
-    return { request, release, prewarm, getResult, status, setOnUpdate: fn => { onUpdate = fn; } };
+    return { request, release, prewarm, reconfigure, getResult, status, setOnUpdate: fn => { onUpdate = fn; } };
   })();
 
   function formatEngineScore(line, whiteToMove) {
@@ -954,6 +1066,197 @@
     badges.sort((x, y) => y.rank - x.rank).forEach(b => overlay.appendChild(b.node));
   }
 
+  // ─────────────────────────── Panel de ajustes ───────────────────────────
+  // Un engranaje en la esquina superior derecha del tablero abre un panel con deslizadores.
+  // Va colgado de <body> (no dentro del tablero) para que sus clics no lleguen al tablero.
+  const UI = (function () {
+    // Mismo idioma que la página de chess.com (o el del navegador si no lo indica)
+    const ES = /^es/i.test(document.documentElement.lang || navigator.language || '');
+    const T = ES
+      ? { title: 'Flechas · ajustes', multiPv: 'Flechas', maxTimeMs: 'Tiempo de búsqueda', maxDepth: 'Profundidad máx.', hashMb: 'Memoria',
+          prefer: 'Usar siempre el motor propio',
+          own: 'Motor propio', depth: 'profundidad', dom: 'Flechas leídas de las líneas de chess.com. Si pides más de las que chess.com lista, las que faltan las calcula el motor propio con estos ajustes.', idle: 'Sin análisis en este momento.', reset: 'Restablecer' }
+      : { title: 'Arrows · settings', multiPv: 'Arrows', maxTimeMs: 'Search time', maxDepth: 'Max depth', hashMb: 'Memory',
+          prefer: 'Always use own engine',
+          own: 'Own engine', depth: 'depth', dom: 'Arrows read from chess.com\'s engine lines. If you ask for more than chess.com lists, the script\'s own engine adds the missing ones with these settings.', idle: 'No analysis right now.', reset: 'Reset' };
+    const DEFAULTS = {};
+    SETTING_DEFS.forEach(def => { DEFAULTS[def.key] = def.key === 'multiPv' ? 3 : def.key === 'maxTimeMs' ? 8000 : def.key === 'maxDepth' ? 18 : 16; });
+
+    let btn = null, panel = null, box = null, modalSection = null, statusEl = null, preferBox = null, open = false, applyTimer = null;
+    const rows = {};
+
+    function el(tag, css, text) {
+      const n = document.createElement(tag);
+      if (css) n.style.cssText = css;
+      if (text != null) n.textContent = text;
+      return n;
+    }
+
+    function sliderPos(def) { return def.values ? def.values.indexOf(CONFIG[def.key]) : CONFIG[def.key]; }
+
+    function syncRows() {
+      SETTING_DEFS.forEach(def => {
+        const r = rows[def.key];
+        if (!r) return;
+        r.input.value = String(sliderPos(def));
+        r.value.textContent = def.fmt(CONFIG[def.key]);
+      });
+      if (preferBox) preferBox.checked = !!CONFIG.preferOwnEngine;
+    }
+
+    function changed() {
+      saveSettings();
+      syncRows();
+      // Mientras se arrastra el deslizador no se reinicia el motor en cada paso
+      clearTimeout(applyTimer);
+      applyTimer = setTimeout(() => { applyTimer = null; Engine.reconfigure(); schedule(); }, 250);
+    }
+
+    function build() {
+      if (box) return;
+      box = el('div', '');
+      btn = el('div', 'position:fixed;z-index:1000;width:20px;height:20px;border-radius:4px;display:none;align-items:center;justify-content:center;' +
+        'background:rgba(20,24,31,.55);color:#fff;font:14px/1 sans-serif;cursor:pointer;opacity:.5;user-select:none;', '⚙');
+      btn.id = 'top3arrows-settings-button';
+      btn.title = T.title;
+      btn.addEventListener('mouseenter', () => { btn.style.opacity = '1'; });
+      btn.addEventListener('mouseleave', () => { if (!open) btn.style.opacity = '.5'; });
+      btn.addEventListener('click', e => { e.stopPropagation(); open = !open; sync(); });
+
+      panel = el('div', 'position:fixed;z-index:1001;width:250px;box-sizing:border-box;padding:10px 12px;border-radius:6px;display:none;' +
+        'background:#262421;color:#e8e6e3;font:13px/1.3 system-ui,sans-serif;box-shadow:0 4px 16px rgba(0,0,0,.5);');
+      panel.id = 'top3arrows-settings-panel';
+      panel.appendChild(el('div', 'font-weight:600;margin-bottom:8px;', T.title));
+
+      SETTING_DEFS.forEach(def => {
+        const row = el('div', 'margin-bottom:8px;');
+        const head = el('div', 'display:flex;justify-content:space-between;margin-bottom:2px;');
+        head.appendChild(el('span', '', T[def.key]));
+        const value = el('span', 'color:#9fd36a;font-variant-numeric:tabular-nums;');
+        head.appendChild(value);
+        const input = el('input', 'width:100%;margin:0;accent-color:#81b64c;cursor:pointer;');
+        input.type = 'range';
+        input.min = String(def.values ? 0 : def.min);
+        input.max = String(def.values ? def.values.length - 1 : def.max);
+        input.step = String(def.values ? 1 : def.step);
+        input.addEventListener('input', () => {
+          const n = Number(input.value);
+          const v = def.values ? def.values[n] : n;
+          if (!isValidSetting(def, v) || v === CONFIG[def.key]) return;
+          CONFIG[def.key] = v;
+          changed();
+        });
+        row.appendChild(head); row.appendChild(input);
+        box.appendChild(row);
+        rows[def.key] = { input, value };
+      });
+
+      const preferRow = el('label', 'display:flex;align-items:center;gap:6px;margin-bottom:8px;cursor:pointer;');
+      preferBox = el('input', 'margin:0;accent-color:#81b64c;cursor:pointer;');
+      preferBox.type = 'checkbox';
+      preferBox.addEventListener('change', () => { CONFIG.preferOwnEngine = preferBox.checked; changed(); });
+      preferRow.appendChild(preferBox);
+      preferRow.appendChild(el('span', '', T.prefer));
+      box.appendChild(preferRow);
+
+      statusEl = el('div', 'color:#a8a6a2;font-size:12px;min-height:16px;margin-bottom:8px;');
+      box.appendChild(statusEl);
+      const reset = el('button', 'background:#3c3a37;color:#e8e6e3;border:0;border-radius:4px;padding:4px 10px;font:inherit;cursor:pointer;', T.reset);
+      reset.type = 'button';
+      reset.addEventListener('click', () => {
+        SETTING_DEFS.forEach(def => { CONFIG[def.key] = DEFAULTS[def.key]; });
+        CONFIG.preferOwnEngine = true;
+        changed();
+      });
+      box.appendChild(reset);
+      panel.appendChild(box);
+
+      // Bloque que se inserta en la ventana de ajustes de chess.com (pestaña Analysis)
+      modalSection = el('div', 'margin-bottom:16px;padding-bottom:14px;border-bottom:1px solid rgba(255,255,255,.12);font-size:14px;color:rgba(255,255,255,.85);');
+      modalSection.id = 'top3arrows-settings-section';
+      modalSection.appendChild(el('div', 'font-weight:600;margin-bottom:10px;', T.title));
+
+      document.body.appendChild(btn);
+      document.body.appendChild(panel);
+      // Un clic fuera del panel lo cierra
+      document.addEventListener('mousedown', e => {
+        if (open && !panel.contains(e.target) && !btn.contains(e.target)) { open = false; sync(); }
+      }, true);
+      syncRows();
+    }
+
+    function statusText() {
+      if (lastSource === 'dom') return T.dom;
+      if (lastSource === 'engine') {
+        const s = Engine.status();
+        const name = (/stockfish[-.]?(\d+)/i.exec(s.label) || [])[1];
+        return T.own + (name ? ' · Stockfish ' + name : '') + (s.depth ? ' · ' + T.depth + ' ' + s.depth : '');
+      }
+      return T.idle;
+    }
+
+    // Los ajustes viven dentro de la ventana de ajustes de chess.com (el engranaje del tablero o el de
+    // la barra Analysis), al principio de su pestaña Analysis. chess.com redibuja esa ventana al
+    // cambiar de pestaña, así que se comprueba en cada pasada.
+    function syncModal() {
+      // chess.com tiene tres ventanas de ajustes distintas (Events, Play/Watch y la página de Análisis).
+      // La pestaña del motor se reconoce en todas, y en cualquier idioma, por su desplegable con "Stockfish".
+      let content = null;
+      const hosts = document.querySelectorAll('.settings-modal-content-content, .settings-engine-component');
+      for (let i = 0; i < hosts.length && !content; i++) {
+        const opts = hosts[i].querySelectorAll('select option');
+        for (let j = 0; j < opts.length; j++) {
+          if (/stockfish/i.test(opts[j].textContent || '')) { content = hosts[i]; break; }
+        }
+      }
+      if (!content) {
+        if (modalSection && modalSection.parentNode) {
+          modalSection.parentNode.removeChild(modalSection);
+          panel.appendChild(box);
+        }
+        return;
+      }
+      build();
+      if (box.parentNode !== modalSection) modalSection.appendChild(box);
+      if (modalSection.parentNode !== content || content.firstChild !== modalSection) content.insertBefore(modalSection, content.firstChild);
+      const txt = statusText();
+      if (statusEl.textContent !== txt) statusEl.textContent = txt;
+    }
+
+    // Coloca (u oculta) el engranaje y el panel según el estado actual
+    function sync() {
+      syncModal();
+      if (!CONFIG.ownGearButton) {
+        open = false;
+        if (btn) { btn.style.display = 'none'; panel.style.display = 'none'; }
+        return;
+      }
+      const boardEl = getMainBoard();
+      const active = !!boardEl && isAnalysisActive() && (lastSource === 'dom' || lastSource === 'engine' || open);
+      if (!active) {
+        open = false;
+        if (btn) { btn.style.display = 'none'; panel.style.display = 'none'; }
+        return;
+      }
+      build();
+      const r = boardEl.getBoundingClientRect();
+      if (r.width < 50) { btn.style.display = 'none'; panel.style.display = 'none'; return; }
+      btn.style.display = 'flex';
+      btn.style.left = Math.round(r.right - 23) + 'px';
+      btn.style.top = Math.round(r.top + 3) + 'px';
+      btn.style.opacity = open ? '1' : (btn.matches(':hover') ? '1' : '.5');
+      panel.style.display = open ? 'block' : 'none';
+      if (open) {
+        panel.style.left = Math.max(4, Math.round(r.right - 253)) + 'px';
+        panel.style.top = Math.round(r.top + 27) + 'px';
+        const txt = statusText();
+        if (statusEl.textContent !== txt) statusEl.textContent = txt;
+      }
+    }
+
+    return { sync };
+  })();
+
   // ─────────────────────────── Bucle principal ───────────────────────────
   let scheduled = false;
   let noLinesSince = 0;   // desde cuándo el análisis está activo sin líneas en la página
@@ -972,6 +1275,7 @@
       const msg = String(e && e.message || e);
       if (msg !== lastError) { lastError = msg; warn('error al actualizar:', e); }
     }
+    try { UI.sync(); } catch (e) { log('panel de ajustes:', e); }
   }
 
   function updateInner() {
@@ -994,9 +1298,23 @@
 
     // 1) Camino normal: chess.com muestra las líneas de su motor → se leen del DOM
     const lines = getAnalysisLines();
+
+    // 0) "Usar siempre el motor propio": igual que en Watch, todas las flechas salen del mismo motor
+    //    y respetan los ajustes del panel. Mientras calcula se muestran las líneas de chess.com (paso 1).
+    const preferOwn = CONFIG.preferOwnEngine && lines.length > 0 && isFallbackAllowed(boardEl);
+    if (preferOwn) {
+      const fen = getPositionFen(boardEl);
+      const res = fen ? Engine.getResult(fen) : null;
+      if (fen) Engine.request(fen);
+      if (res && (res.depth >= CONFIG.minDepthToDraw || res.done)) {
+        resetWait(); lastSource = 'engine';
+        render(overlay, engineArrows(res), isFlipped, 'engine');
+        return;
+      }
+    }
+
     if (lines.length) {
       resetWait(); lastSource = 'dom';
-      Engine.release();
       const pieces = getBoardPieces(boardEl);
       const legal = getLegalInfo(boardEl);
       const arrows = [];
@@ -1004,7 +1322,32 @@
         const move = resolveLineMove(line, legal, pieces);
         if (move) arrows.push({ rank: line.rank, from: move.from, to: move.to, label: line.score });
       });
-      render(overlay, arrows, isFlipped, 'dom');
+
+      // chess.com lista menos líneas que las flechas pedidas en el panel (su ajuste "Engine Lines"
+      // suele ser 3): las que faltan se completan con el motor propio, sin repetir jugadas.
+      let source = 'dom';
+      const fen = preferOwn ? getPositionFen(boardEl)
+        : (arrows.length && arrows.length < CONFIG.multiPv && isFallbackAllowed(boardEl)) ? getPositionFen(boardEl) : null;
+      if (fen) {
+        Engine.request(fen);
+        const res = Engine.getResult(fen);
+        if (res && (res.depth >= CONFIG.minDepthToDraw || res.done)) {
+          const used = new Set(arrows.map(a => a.from + a.to));
+          const whiteToMove = res.turn !== 'b';
+          let rank = arrows.reduce((m, a) => Math.max(m, a.rank), 0);
+          for (let i = 0; i < res.lines.length && rank < CONFIG.multiPv; i++) {
+            const l = res.lines[i];
+            const key = l.move.slice(0, 4);
+            if (used.has(key)) continue;
+            used.add(key);
+            arrows.push({ rank: ++rank, from: key.slice(0, 2), to: key.slice(2, 4), label: formatEngineScore(l, whiteToMove) });
+          }
+          source = 'dom+engine';
+        }
+      } else {
+        Engine.release();
+      }
+      render(overlay, arrows, isFlipped, source);
       return;
     }
 
@@ -1058,14 +1401,17 @@
       render(overlay, null, isFlipped, 'engine'); // posición nueva: se borran las flechas anteriores
       return;
     }
+    render(overlay, engineArrows(res), isFlipped, 'engine');
+  }
+
+  function engineArrows(res) {
     const whiteToMove = res.turn !== 'b';
-    const arrows = res.lines.slice(0, 3).map(l => ({
+    return res.lines.slice(0, CONFIG.multiPv).map(l => ({
       rank: l.rank,
       from: l.move.slice(0, 2),
       to: l.move.slice(2, 4),
       label: formatEngineScore(l, whiteToMove)
     }));
-    render(overlay, arrows, isFlipped, 'engine');
   }
 
   function schedule() {
@@ -1092,9 +1438,9 @@
       if (t.id === 'analysis' || t.id === 'evaluationSettings' || classNameOf(t).indexOf('cc-switch-checkbox') !== -1) schedule();
     });
 
-    const WATCHED = 'wc-evaluation-lines, wc-chess-board, chess-board, .board, .engine-lines-engine-lines-redesign, .evaluation-settings-component, .analysis-options-component';
+    const WATCHED = 'wc-evaluation-lines, wc-chess-board, chess-board, .board, .engine-lines-engine-lines-redesign, .evaluation-settings-component, .analysis-options-component, .settings-modal-container-component';
     const WATCHED_CLASSES = ['evaluation-lines-node', 'evaluation-lines-component', 'engine-line-node', 'engine-line-component', 'piece'];
-    const MOUNTS = '#evaluationSettings, #analysis, wc-evaluation-lines, wc-chess-board';
+    const MOUNTS = '#evaluationSettings, #analysis, wc-evaluation-lines, wc-chess-board, .settings-modal-container-component';
     const obs = new MutationObserver(mutations => {
       for (let i = 0; i < mutations.length; i++) {
         const m = mutations[i];
@@ -1118,19 +1464,23 @@
 
     obs.observe(document.body, { childList: true, subtree: true, characterData: true, attributes: true, attributeFilter: ['class', 'style', 'checked'] });
 
+    // El engranaje sigue al tablero al desplazar o redimensionar
+    window.addEventListener('scroll', schedule, true);
+    window.addEventListener('resize', schedule);
+
     setInterval(schedule, 500);
     schedule();
   }
 
   PAGE.__top3ArrowsHybrid = {
-    version: '9.1.1',
+    version: '9.4.0',
     config: CONFIG,
     refresh: update,
     // timeline: ms desde que empezó a cargar la página hasta cada etapa (script, board, analysisOn, engineBoot, engineReady, arrows)
     status: () => ({ source: lastSource, keepAnalysis: keepPref, timeline: Object.assign({}, timeline), engine: Engine.status() })
   };
 
-  info('v9.1.1 cargado.');
+  info('v9.4.0 cargado.');
 
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', init);
   else init();
