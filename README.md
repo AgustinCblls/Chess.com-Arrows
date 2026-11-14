@@ -10,7 +10,7 @@ Nothing else to install: when chess.com does not show engine lines, the script s
 
 | Watching a game: no moves listed beside the board, so each arrow carries its evaluation | Events broadcast: chess.com lists the engine lines, so the arrows stay clean |
 |---|---|
-| ![Board with three orange arrows, the best move largest, each with its evaluation](docs/images/arrows-3.png) | ![Events board with three orange arrows and no numbers](docs/images/arrows-events.png) |
+| ![Board with three orange arrows, the best move largest, each with its evaluation](docs/images/watch-arrows.png) | ![Events board with three orange arrows and no numbers](docs/images/events-arrows.png) |
 
 The best move gets the full-size arrow; the others are smaller and more transparent. The evaluation next to each arrow is shown while watching games; on pages where chess.com already lists engine lines beside the board (Events, Analysis) the arrows follow that list and stay clean. Both are checkboxes in the settings.
 
@@ -22,7 +22,7 @@ Three arrow styles, here with five arrows, the expected reply in grey, and the e
 
 The settings sit at the top of the **Analysis** tab of chess.com's own settings window:
 
-![chess.com's settings window with the "Arrows · settings" block above its engine options](docs/images/settings.png)
+![chess.com's settings window with the "Arrows · settings" block above its engine options](docs/images/settings-block.png)
 
 ## Where it works
 
