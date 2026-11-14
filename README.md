@@ -94,12 +94,7 @@ The arrow settings live inside chess.com's own settings window. Open it with eit
 
 When you are not signed in, chess.com's board gear opens a sign-up prompt instead of its settings, so the script shows a small gear of its own in the top-right corner of the board. Set `ownGearButton: true` in the `CONFIG` block to always show it.
 
-**Arrow style** chooses how the arrows look:
-
-| Like chess.com (default) | Numbered colours | Like Lichess |
-|---|---|---|
-| ![Orange arrows in the style of chess.com's own](docs/images/style-chesscom.png) | ![Coloured, numbered arrows with the expected reply in grey](docs/images/style-color.png) | ![Blue and grey arrows in the style of Lichess](docs/images/style-lichess.png) |
- the two single-colour styles the best move is the strongest arrow and the others get thinner and more transparent; there are no numbered circles.
+**Arrow style** chooses how the arrows look: like chess.com's own orange arrows (default), numbered colours, or like Lichess. The three are shown side by side in [Screenshots](#screenshots). In the two single-colour styles only the best move gets the full-size arrow and the others are smaller and more transparent; there are no numbered circles.
 
 | Slider | Range | Default | Meaning |
 |---|---|---|---|
