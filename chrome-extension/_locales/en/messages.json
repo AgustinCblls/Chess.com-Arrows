@@ -1,0 +1,4 @@
+{
+  "extName": { "message": "Chess.com - Analysis Arrows" },
+  "extDescription": { "message": "Draws the engine's best moves as arrows on the chess.com board, where chess.com itself offers analysis." }
+}

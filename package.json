@@ -1,0 +1,21 @@
+{
+  "name": "chesscom-arrows",
+  "version": "9.7.0",
+  "private": true,
+  "description": "Engine move arrows for chess.com analysis and watched games (userscript + browser extension).",
+  "type": "module",
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "icons": "node scripts/make-icons.mjs",
+    "test": "vitest run",
+    "check": "npm test && npm run build",
+    "package:firefox": "node scripts/package-firefox.mjs",
+    "lint:firefox": "npx --yes web-ext@8.3.0 lint --source-dir dist/firefox"
+  },
+  "devDependencies": {
+    "esbuild": "0.24.2",
+    "fflate": "0.8.2",
+    "jsdom": "25.0.1",
+    "vitest": "2.1.8"
+  }
+}

@@ -1,0 +1,4 @@
+# Stockfish se guarda tal cual lo publica npm: sin conversión de finales de línea (lo comprueba su hash)
+vendor/** -text
+*.wasm binary
+*.png binary
