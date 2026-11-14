@@ -58,37 +58,34 @@ Where chess.com shows engine lines, the arrows follow them and the script's own 
 
 Use one of the two, not both.
 
-### Userscript
+### Use
 
-1. Install [Tampermonkey](https://www.tampermonkey.net/) or [Violentmonkey](https://violentmonkey.github.io/).
-2. Open [`chess_analysis_arrows.user.js`](https://github.com/hediondom/Chess.com-Arrows/raw/main/chess_analysis_arrows.user.js) and confirm the install.
-3. Remove any older copy of the script from the userscript manager, or only the first one loaded will run.
+Open a game and turn on chess.com's **Analysis** switch. The arrows appear on the board and follow every move.
 
-The script must keep `@grant none`: it has to run in the page itself to reach the board and the engine.
+### Reading the arrows
 
-### Chrome or Edge extension
+- **Best move.** In the default style the arrows look like chess.com's own orange arrows. Only the best move gets the full-size arrow; the others are clearly smaller and more transparent. A knight move is drawn as an L, as chess.com does.
+- **How many.** Three arrows by default, up to five.
+- **Other styles.** *Numbered colours* gives each move its own colour and a numbered circle (green `1`, blue `2`, orange `3`, purple `4`, pink `5`); if a better arrow leaves the same piece, the number of the weaker one sits on its own shaft. *Like Lichess* draws the best move in blue and the rest in grey.
+- **Same line.** When two arrows leave the same square in the same direction, the shorter one is drawn on top with a thin white edge so both stay visible.
+- **Expected reply.** Optionally, a thin grey dashed arrow shows the opponent's expected answer to the best move.
 
-1. Download this repository.
-2. Open `chrome://extensions` and turn on **Developer mode**.
-3. Choose **Load unpacked** and select the `chrome-extension` folder.
+### Where the moves and numbers come from
 
-`chrome-extension/content.js` is a copy of the userscript. The manifest runs it with `"world": "MAIN"`, which needs Chrome 111 or later.
+- **Watching a game** (chess.com shows only the evaluation bar): all arrows come from the script's own engine, and each one carries its evaluation, for example `+0.36`. The arrows appear about half a second after the switch is on and keep improving up to the chosen depth.
+- **Events, the Analysis page, the Analysis tab of a finished game** (chess.com lists engine lines beside the board): the arrows follow that list, first line first, so the board always agrees with the panel. The numbers are not repeated on the board. If you ask for more arrows than chess.com lists, the script's engine adds the missing ones.
+- The evaluation is always from White's side, the convention chess.com uses. While watching, the number comes from the script's engine and the evaluation bar from chess.com's, so the two can differ slightly.
+- Next to chess.com's `depth=N` the script shows the depth of its own engine (`arrows d=18`) whenever the arrows come from it.
 
-## Use
+Each of these defaults has a control in the settings.
 
-Open a game and turn on chess.com's **Analysis** switch.
+### Other behaviour
 
-- By default the arrows look like chess.com's own orange arrows: the best move is the thickest and most solid, the others get thinner and more transparent. Other styles are in the settings.
-- In the **Numbered colours** style, green `1` is the best move, blue `2` the second, orange `3` the third. With more arrows enabled, `4` is purple and `5` is pink.
-- The number next to each arrowhead is the evaluation from White's side, the same convention chess.com uses. It comes from the script's engine, while the evaluation bar is chess.com's own engine, so the two can differ slightly.
-- When a better arrow leaves the same square, the number of the weaker one sits on its own shaft instead of on the piece.
-- After each move the previous arrows stay faded for an instant until the new analysis arrives, instead of blinking.
 - **Alt+A** hides or shows the arrows.
-- No arrows are drawn on the final position of a finished game.
-- Next to chess.com's `depth=N` the script shows the depth of its own engine (`arrows d=18`).
-- On pages without engine lines, the arrows appear about half a second after the switch is turned on and keep improving up to depth 18.
+- After each move the previous arrows stay faded for an instant until the new analysis arrives, instead of blinking.
+- No arrows are drawn on the final position of a finished game; step back and they return.
 - While you watch a game, the script remembers whether you left **Analysis** on. chess.com switches it off when another game starts (a rematch, for example) and the script switches it back on. Turn it off yourself and it stays off.
-
+- The arrows stay when you open the Chat tab while watching, even though chess.com hides its Analysis switch there.
 ## Settings
 
 ### Settings panel
