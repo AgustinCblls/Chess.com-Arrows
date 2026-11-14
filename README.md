@@ -132,6 +132,8 @@ The remaining options are at the top of the script.
 | `graceNoPanelMs` | `1000` | Longest wait before starting the engine when the page has no lines panel |
 | `graceEmptyPanelMs` | `3000` | Wait when the lines panel exists but is empty |
 | `engineBootTimeoutsMs` | `[2500, 6000, 12000]` | How long to wait for the worker to answer on each attempt before trying the next engine |
+| `engineStopTimeoutMs` | `700` | If the engine does not drop the previous search within this time, its worker is restarted (a restart takes about 0.2 s) |
+| `engineSilenceMs` | `1500` | If the engine says nothing for this long after being asked for an analysis, its worker is restarted |
 | `engineIdleKillMs` | `60000` | The worker is shut down after this long without use |
 | `debug` | `false` | Detailed messages in the console |
 
@@ -151,10 +153,12 @@ Using engine help in your own games breaks chess.com's Fair Play policy. This to
 
 Open the browser console on chess.com:
 
-- `[Top3 Arrows] v9.6.4 cargado.` confirms the script is running.
+- `[Top3 Arrows] v9.6.6 cargado.` confirms the script is running.
 - `__top3ArrowsHybrid.status()` shows where the arrows come from (`dom`, `engine`, `none` or `off`) and the engine's state.
 - If the arrows are slow to appear, `status().timeline` tells which stage took the time. It gives the milliseconds from the start of the page load to each step: `script`, `board`, `analysisOn`, `engineBoot`, `engineReady` and `arrows`.
 - Double arrows mean two copies are active, for example the userscript and the extension, or an older version of the script.
+
+- `__top3ArrowsHybrid.log()` in the console prints a timed record of what the script saw and did: game changes, the board mode, the Analysis switch, automatic clicks, engine restarts and when arrows were drawn. It survives a page reload. Paste it when reporting a delay; `__top3ArrowsHybrid.clearLog()` empties it.
 
 ## Disclaimer
 

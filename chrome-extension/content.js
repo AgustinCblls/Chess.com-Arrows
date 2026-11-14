@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Chess.com - Top 3 Analysis Arrows
 // @namespace    https://github.com/hediondom/Chess.com-Arrows
-// @version      9.6.4
+// @version      9.6.6
 // @description  Top-3 engine move arrows for chess.com analysis and watched games. Uses chess.com's own Stockfish in a Web Worker, so no extra app or Stockfish install is needed.
 // @homepageURL  https://github.com/hediondom/Chess.com-Arrows
 // @supportURL   https://github.com/hediondom/Chess.com-Arrows/issues
@@ -42,6 +42,8 @@
     graceNoPanelMs: 1000,       // espera máxima antes de usar el motor si la página no tiene panel de líneas
     graceEmptyPanelMs: 3000,    // espera si el panel de líneas existe pero está vacío
     engineBootTimeoutsMs: [2500, 6000, 12000], // si el worker no responde se reintenta el mismo motor con más margen; luego se pasa al siguiente
+    engineStopTimeoutMs: 700,   // si el motor no deja la búsqueda anterior en este tiempo, se reinicia el worker (tarda ~0,2 s)
+    engineSilenceMs: 1500,      // si tras pedir un análisis el motor no dice nada en este tiempo, se reinicia el worker
     engineIdleKillMs: 60000,    // apaga el worker del motor tras este tiempo sin usarse
     debug: false                // true = mensajes detallados en la consola
   };
@@ -108,6 +110,70 @@
   // Momento (ms desde que empezó a cargar la página) en que ocurrió cada etapa por primera vez
   const timeline = {};
   function markOnce(name) { if (!(name in timeline)) timeline[name] = Math.round(performance.now()); }
+  // ─────────────────────────── Diagnóstico ───────────────────────────
+  // Registro de lo que va ocurriendo (cambios de partida, switch, motor, flechas) con su hora.
+  // Se guarda en sessionStorage para que sobreviva a una recarga de la página.
+  // En la consola: __top3ArrowsHybrid.log()
+  const DIAG_KEY = 'top3arrows_log';
+  let diagLog = [];
+  try { diagLog = JSON.parse(sessionStorage.getItem(DIAG_KEY) || '[]') || []; } catch (e) { diagLog = []; }
+  if (!Array.isArray(diagLog)) diagLog = [];
+  let diagSaveTimer = null;
+  function diagSave() {
+    clearTimeout(diagSaveTimer); diagSaveTimer = null;
+    try { sessionStorage.setItem(DIAG_KEY, JSON.stringify(diagLog)); } catch (e) { /* sin almacenamiento */ }
+  }
+  function diag(ev, data) {
+    diagLog.push(Object.assign({ t: Date.now(), ev }, data || {}));
+    if (diagLog.length > 400) diagLog.splice(0, diagLog.length - 400);
+    if (!diagSaveTimer) diagSaveTimer = setTimeout(diagSave, 300);
+  }
+  let diagPrev = {};
+  function diagSnapshot() {
+    const boardEl = getMainBoard();
+    const game = boardEl ? getGame(boardEl) : null;
+    let mode = null, over = null, fen = null;
+    try {
+      if (game) {
+        mode = typeof game.getMode === 'function' ? game.getMode().name : null;
+        over = typeof game.isGameOver === 'function' ? game.isGameOver() : null;
+        fen = typeof game.getFEN === 'function' ? String(game.getFEN()).split(' ').slice(0, 2).join(' ') : null;
+      }
+    } catch (e) { /* tablero a medio cargar */ }
+    const sw = document.getElementById('evaluationSettings') || document.getElementById('analysis');
+    const ov = boardEl ? boardEl.querySelector('#' + OVERLAY_ID) : null;
+    const cur = {
+      path: location.pathname,
+      board: boardEl ? (boardEl.tagName || '').toLowerCase() : 'none',
+      mode, over,
+      sw: sw ? (sw.checked ? 'on' : 'off') : 'none',
+      bar: document.querySelector('wc-evaluation-bar') !== null,
+      src: lastSource,
+      eng: Engine.status().state,
+      arrows: ov && ov.getAttribute('data-sig') ? 1 : 0,
+      fen
+    };
+    const changed = {};
+    let any = false;
+    for (const k in cur) { if (cur[k] !== diagPrev[k]) { changed[k] = cur[k]; any = true; } }
+    if (any) { diag('state', changed); diagPrev = cur; }
+  }
+  function diagText() {
+    let prev = 0;
+    return diagLog.map(e => {
+      const d = new Date(e.t);
+      const rest = Object.keys(e).filter(k => k !== 't' && k !== 'ev').map(k => k + '=' + e[k]).join(' ');
+      const line = d.toTimeString().slice(0, 8) + '.' + String(d.getMilliseconds()).padStart(3, '0') + (prev ? ' (+' + (e.t - prev) + ' ms) ' : ' ') + e.ev + ' ' + rest;
+      prev = e.t;
+      return line;
+    }).join('\n');
+  }
+  window.addEventListener('pagehide', diagSave);
+  (function () {
+    let navType = '';
+    try { const nav = performance.getEntriesByType('navigation')[0]; navType = nav ? nav.type : ''; } catch (e) { /* sin API */ }
+    diag('scriptLoaded', { nav: navType, msSinceNavigation: Math.round(performance.now()), path: location.pathname });
+  })();
   markOnce('script');
 
   // ─────────────────────────── Tablero ───────────────────────────
@@ -610,6 +676,7 @@
     if (failedAutoClicks >= 3 || now - lastAutoClickAt < 1500 || now - userSwitchClickAt < 1500) return;
     lastAutoClickAt = now;
     failedAutoClicks++;
+    diag('autoClickAnalysis', { attempt: failedAutoClicks });
     log('chess.com apagó Analysis; se vuelve a encender');
     toggle.click();
   }
@@ -620,7 +687,8 @@
     let state = 'off';        // off | booting | ready
     let label = '';
     let bootSeq = 0;
-    let bootTimer = null, idleTimer = null, stopTimer = null, commitTimer = null;
+    let bootTimer = null, idleTimer = null, stopTimer = null, commitTimer = null, silenceTimer = null;
+    let silentKills = 0;
     let candidates = null, candIdx = 0, deadUntil = 0, crashes = 0;
     let bootAttempt = 0, bootCount = 0;
     let optsDirty = false, hashMax = Infinity;
@@ -702,8 +770,8 @@
 
     function killWorker() {
       bootSeq++;
-      clearTimeout(bootTimer); clearTimeout(stopTimer); clearTimeout(commitTimer);
-      bootTimer = stopTimer = commitTimer = null;
+      clearTimeout(bootTimer); clearTimeout(stopTimer); clearTimeout(commitTimer); clearTimeout(silenceTimer);
+      bootTimer = stopTimer = commitTimer = silenceTimer = null;
       if (worker) { try { worker.terminate(); } catch (e) { /* ya terminado */ } }
       worker = null;
       searching = false; discard = false; searchFen = null;
@@ -803,11 +871,13 @@
       }
       if (state !== 'ready') return;
       if (line.lastIndexOf('info ', 0) === 0) {
+        if (silenceTimer) { clearTimeout(silenceTimer); silenceTimer = null; silentKills = 0; }
         if (searching && !discard) parseInfo(line);
         return;
       }
       if (line.lastIndexOf('bestmove', 0) === 0) {
         clearTimeout(stopTimer); stopTimer = null;
+        clearTimeout(silenceTimer); silenceTimer = null;
         const stale = discard;
         searching = false; discard = false;
         if (!stale && result && result.fen === searchFen) {
@@ -889,6 +959,20 @@
       log('analizando', fen);
       post('position fen ' + fen);
       post('go depth ' + CONFIG.maxDepth + ' movetime ' + CONFIG.maxTimeMs);
+      // Vigilancia: a veces el worker se queda sin responder (visto al empezar una revancha). Si no dice
+      // nada enseguida se reinicia; tras tres seguidas se trata como un fallo del motor.
+      clearTimeout(silenceTimer);
+      silenceTimer = setTimeout(() => {
+        silenceTimer = null;
+        if (!searching || discard || searchFen !== fen) return;
+        silentKills++;
+        diag('engineSilent', { n: silentKills });
+        if (silentKills >= 3) { silentKills = 0; onWorkerError('sin respuesta'); return; }
+        warn('el motor no responde; se reinicia');
+        killWorker();
+        result = null;
+        if (wantedFen) boot();
+      }, CONFIG.engineSilenceMs);
     }
 
     function pump() {
@@ -907,11 +991,12 @@
       stopTimer = setTimeout(() => {
         stopTimer = null;
         if (searching && discard) {
+          diag('engineStopTimeout', {});
           warn('el motor no respondió a "stop"; se reinicia');
           killWorker();
           if (wantedFen) boot();
         }
-      }, 5000);
+      }, CONFIG.engineStopTimeoutMs);
     }
 
     function request(fen) {
@@ -1475,6 +1560,7 @@
       if (msg !== lastError) { lastError = msg; warn('error al actualizar:', e); }
     }
     try { UI.sync(); } catch (e) { log('panel de ajustes:', e); }
+    try { diagSnapshot(); } catch (e) { /* el diagnóstico nunca debe romper nada */ }
   }
 
   function updateInner() {
@@ -1703,14 +1789,16 @@
   }
 
   PAGE.__top3ArrowsHybrid = {
-    version: '9.6.4',
+    version: '9.6.6',
     config: CONFIG,
     refresh: update,
     // timeline: ms desde que empezó a cargar la página hasta cada etapa (script, board, analysisOn, engineBoot, engineReady, arrows)
+    log: () => diagText(),
+    clearLog: () => { diagLog = []; diagPrev = {}; diagSave(); },
     status: () => ({ source: lastSource, keepAnalysis: keepPref, timeline: Object.assign({}, timeline), engine: Engine.status() })
   };
 
-  info('v9.6.4 cargado.');
+  info('v9.6.6 cargado.');
 
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', init);
   else init();
