@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Chess.com - Top 3 Analysis Arrows
 // @namespace    https://github.com/hediondom/Chess.com-Arrows
-// @version      9.4.0
+// @version      9.6.4
 // @description  Top-3 engine move arrows for chess.com analysis and watched games. Uses chess.com's own Stockfish in a Web Worker, so no extra app or Stockfish install is needed.
 // @homepageURL  https://github.com/hediondom/Chess.com-Arrows
 // @supportURL   https://github.com/hediondom/Chess.com-Arrows/issues
@@ -28,7 +28,15 @@
     maxTimeMs: 8000,            // ...o tras este tiempo por posición (lo que ocurra primero)
     hashMb: 16,                 // memoria (tabla hash) del motor alternativo, en MB
     ownGearButton: false,       // true = además, engranaje propio flotante en la esquina del tablero (por si chess.com cambia su ventana de ajustes)
-    preferOwnEngine: true,      // true = flechas siempre del motor propio (como en Watch); las líneas de chess.com solo se usan mientras calcula. También en el panel
+    arrowStyle: 'chesscom',      // 'color' = flechas de colores numeradas; 'chesscom' = como las flechas naranjas de chess.com; 'lichess' = como las de Lichess. También en el panel
+    scoresWatch: true,          // número de evaluación junto a cada flecha donde chess.com NO lista líneas (partidas que miras en Watch). También en el panel
+    scoresWithLines: false,     // lo mismo donde chess.com SÍ lista sus líneas a la derecha (Events, Análisis). También en el panel
+    ownEngineOnly: false,
+    showReply: false,           // flecha gris con la respuesta esperada del rival a la mejor jugada. También en el panel
+    hideWorseBy: 0,             // oculta las flechas que pierden más de estos centipeones frente a la mejor (0 = no ocultar). También en el panel
+    hideAtGameEnd: true,        // sin flechas en la posición final de una partida terminada
+    hotkey: 'a',                // Alt + esta tecla oculta o muestra las flechas ('' = sin atajo)
+    showDepthTag: true,         // muestra la profundidad del motor propio junto al "depth=N" de chess.com      // true = flechas siempre del motor propio (como en Watch); las líneas de chess.com solo se usan mientras calcula. También en el panel
     minDepthToDraw: 8,          // no dibujar hasta esta profundidad (evita flechas que saltan)
     graceEngineSeenMs: 100,     // espera cuando el motor de chess.com ya trabaja y la página no tiene panel de líneas
     graceNoPanelMs: 1000,       // espera máxima antes de usar el motor si la página no tiene panel de líneas
@@ -53,8 +61,12 @@
     { key: 'multiPv', min: 1, max: 5, step: 1, fmt: v => String(v) },
     { key: 'maxTimeMs', min: 1000, max: 30000, step: 1000, fmt: v => (v / 1000) + ' s' },
     { key: 'maxDepth', min: 10, max: 40, step: 1, fmt: v => String(v) },
-    { key: 'hashMb', values: HASH_STEPS, fmt: v => v + ' MB' }
+    { key: 'hashMb', values: HASH_STEPS, fmt: v => v + ' MB' },
+    { key: 'hideWorseBy', values: [0, 50, 100, 150, 200, 300], fmt: v => v ? (v / 100).toFixed(1) : '—' }
   ];
+  const BOOL_SETTINGS = ['scoresWatch', 'scoresWithLines', 'showReply', 'ownEngineOnly'];
+  const ARROW_STYLES = ['chesscom', 'color', 'lichess'];
+  const SETTING_DEFAULTS = { multiPv: 3, maxTimeMs: 8000, maxDepth: 18, hashMb: 16, hideWorseBy: 0, ownEngineOnly: false, scoresWatch: true, scoresWithLines: false, showReply: false, arrowStyle: 'chesscom' };
   function isValidSetting(def, v) {
     if (typeof v !== 'number' || !isFinite(v)) return false;
     return def.values ? def.values.indexOf(v) !== -1 : (v >= def.min && v <= def.max && v % def.step === 0);
@@ -64,7 +76,8 @@
       const saved = JSON.parse(localStorage.getItem(SETTINGS_KEY) || 'null');
       if (saved && typeof saved === 'object') {
         SETTING_DEFS.forEach(def => { if (isValidSetting(def, saved[def.key])) CONFIG[def.key] = saved[def.key]; });
-        if (typeof saved.preferOwnEngine === 'boolean') CONFIG.preferOwnEngine = saved.preferOwnEngine;
+        BOOL_SETTINGS.forEach(k => { if (typeof saved[k] === 'boolean') CONFIG[k] = saved[k]; });
+        if (ARROW_STYLES.indexOf(saved.arrowStyle) !== -1) CONFIG.arrowStyle = saved.arrowStyle;
       }
     } catch (e) { /* ajustes dañados o sin almacenamiento: quedan los de CONFIG */ }
   })();
@@ -72,7 +85,8 @@
     try {
       const out = {};
       SETTING_DEFS.forEach(def => { out[def.key] = CONFIG[def.key]; });
-      out.preferOwnEngine = !!CONFIG.preferOwnEngine;
+      BOOL_SETTINGS.forEach(k => { out[k] = !!CONFIG[k]; });
+      out.arrowStyle = CONFIG.arrowStyle;
       localStorage.setItem(SETTINGS_KEY, JSON.stringify(out));
     } catch (e) { /* sin almacenamiento: duran hasta recargar */ }
   }
@@ -816,7 +830,11 @@
       const mp = / multipv (\d+)/.exec(line);
       const rank = mp ? parseInt(mp[1], 10) : 1;
       if (rank < 1 || rank > CONFIG.multiPv) return;
-      pending.set(rank, { rank, move: pv[1], type: sc[1], value: parseInt(sc[2], 10), depth: d ? parseInt(d[1], 10) : 0 });
+      const depth = d ? parseInt(d[1], 10) : 0;
+      const rp = / pv [a-h][1-8][a-h][1-8][qrbn]? ([a-h][1-8][a-h][1-8])/.exec(line);
+      let atDepth = pending.get(depth);
+      if (!atDepth) { atDepth = new Map(); pending.set(depth, atDepth); }
+      atDepth.set(rank, { rank, move: pv[1], reply: rp ? rp[1] : null, type: sc[1], value: parseInt(sc[2], 10), depth });
       if (!commitTimer) commitTimer = setTimeout(() => { commitTimer = null; if (flushCommit()) onUpdate(); }, 40);
     }
 
@@ -825,8 +843,20 @@
       clearTimeout(commitTimer); commitTimer = null;
       if (!result || discard || !pending.size) return false;
       // A mitad de una iteración una jugada puede figurar en dos puestos: se conserva el mejor
+      // Solo se usan líneas de una misma profundidad ya completa: si la búsqueda se corta a mitad de una
+      // pasada, mezclar profundidades deja las flechas en un orden que no cuadra con sus números.
+      const depths = Array.from(pending.keys()).sort((a, b) => b - a);
+      let chosen = depths[depths.length - 1];
+      for (let i = 0; i < depths.length; i++) {
+        const size = pending.get(depths[i]).size;
+        let lowerMax = 0;
+        for (let j = i + 1; j < depths.length; j++) lowerMax = Math.max(lowerMax, pending.get(depths[j]).size);
+        const complete = i + 1 < depths.length ? size >= lowerMax : size >= CONFIG.multiPv;
+        if (complete) { chosen = depths[i]; break; }
+      }
+      depths.forEach(dd => { if (dd < chosen) pending.delete(dd); });
       const seenMoves = new Set();
-      const lines = Array.from(pending.values())
+      const lines = Array.from(pending.get(chosen).values())
         .sort((a, b) => a.rank - b.rank)
         .filter(l => !seenMoves.has(l.move) && seenMoves.add(l.move));
       result.lines = lines;
@@ -957,7 +987,8 @@
     return overlay;
   }
 
-  function drawArrow(fromCoords, toCoords, config, labelText, rankNum) {
+  // badgeAt: dónde va el círculo con el número si no puede ir en la casilla de origen (la ocupa otra flecha mejor)
+  function drawArrow(fromCoords, toCoords, config, labelText, rankNum, badgeAt) {
     let g = document.createElementNS(SVG_NS, 'g');
     const dx = toCoords.x - fromCoords.x; const dy = toCoords.y - fromCoords.y;
     const len = Math.sqrt(dx * dx + dy * dy); if (!len) return null;
@@ -987,13 +1018,14 @@
     g = document.createElementNS(SVG_NS, 'g');
 
     const circ = document.createElementNS(SVG_NS, 'circle');
-    circ.setAttribute('cx', fromCoords.x); circ.setAttribute('cy', fromCoords.y); circ.setAttribute('r', '2.4');
+    const bx = badgeAt ? badgeAt.x : fromCoords.x; const by = badgeAt ? badgeAt.y : fromCoords.y;
+    circ.setAttribute('cx', bx); circ.setAttribute('cy', by); circ.setAttribute('r', badgeAt ? '1.9' : '2.4');
     circ.setAttribute('fill', config.labelBg); circ.setAttribute('stroke', '#fff'); circ.setAttribute('stroke-width', '0.6');
     g.appendChild(circ);
 
     const txtRank = document.createElementNS(SVG_NS, 'text');
-    txtRank.setAttribute('x', fromCoords.x); txtRank.setAttribute('y', fromCoords.y + 0.9);
-    txtRank.setAttribute('font-size', '2.6'); txtRank.setAttribute('font-weight', 'bold'); txtRank.setAttribute('text-anchor', 'middle'); txtRank.setAttribute('fill', '#fff');
+    txtRank.setAttribute('x', bx); txtRank.setAttribute('y', by + (badgeAt ? 0.75 : 0.9));
+    txtRank.setAttribute('font-size', badgeAt ? '2.1' : '2.6'); txtRank.setAttribute('font-weight', 'bold'); txtRank.setAttribute('text-anchor', 'middle'); txtRank.setAttribute('fill', '#fff');
     txtRank.textContent = rankNum;
     g.appendChild(txtRank);
 
@@ -1011,6 +1043,83 @@
     return { body, badge: g };
   }
 
+  // Estilos que imitan las flechas que dibuja la propia página (clic derecho en chess.com, motor en Lichess).
+  // Un solo color, sin círculos numerados (índice 0 = mejor jugada). Solo la mejor va a tamaño completo;  // las demás son claramente más pequeñas y transparentes para que no se confundan con ella.
+  const NATIVE_STYLES = {
+    chesscom: { color: '#ffaa00', other: '#ffaa00', opacity: [0.9, 0.62, 0.52, 0.44, 0.38], scale: [1, 0.55, 0.55, 0.5, 0.46], shaft: 2.75, headW: 6.5, headL: 4.4, start: 4.4, knightL: true },
+    lichess: { color: '#003088', other: '#4a4a4a', opacity: [0.55, 0.42, 0.36, 0.3, 0.26], scale: [1.2, 0.68, 0.68, 0.62, 0.56], shaft: 1.95, headW: 6.2, headL: 4.8, start: 1.5, knightL: false }
+  };
+
+  // covered: la flecha va encima de otra más larga del mismo color; se le da borde para que se distinga
+  function drawNativeArrow(from, to, st, rank, labelText, covered) {
+    const i = Math.max(0, Math.min(rank, 5) - 1);
+    const k = st.scale[i];
+    const dx = to.x - from.x; const dy = to.y - from.y;
+    if (!dx && !dy) return null;
+    const adx = Math.abs(dx); const ady = Math.abs(dy);
+    // chess.com dibuja el salto de caballo en L: primero el tramo largo, luego gira
+    const isKnight = st.knightL && Math.abs(Math.max(adx, ady) - 25) < 0.5 && Math.abs(Math.min(adx, ady) - 12.5) < 0.5;
+    const corner = isKnight ? (adx > ady ? { x: to.x, y: from.y } : { x: from.x, y: to.y }) : null;
+    const a = corner || from; // inicio del último tramo
+    const lx = to.x - a.x; const ly = to.y - a.y;
+    const ll = Math.sqrt(lx * lx + ly * ly);
+    const ux = lx / ll; const uy = ly / ll;
+    const headL = st.headL * k; const headW = st.headW * k;
+    const bx = to.x - ux * headL; const by = to.y - uy * headL; // base de la punta
+    const fx = (corner ? corner.x : to.x) - from.x; const fy = (corner ? corner.y : to.y) - from.y;
+    const fl = Math.sqrt(fx * fx + fy * fy);
+    const sx = from.x + fx / fl * st.start; const sy = from.y + fy / fl * st.start;
+    const color = rank === 1 ? st.color : st.other;
+
+    const g = document.createElementNS(SVG_NS, 'g');
+    // La opacidad va en el grupo: así el trazo y la punta no se oscurecen donde se pisan
+    const shape = document.createElementNS(SVG_NS, 'g');
+    shape.setAttribute('opacity', st.opacity[i]);
+    const line = document.createElementNS(SVG_NS, 'polyline');
+    line.setAttribute('points', sx + ',' + sy + (corner ? ' ' + corner.x + ',' + corner.y : '') + ' ' + bx + ',' + by);
+    line.setAttribute('fill', 'none'); line.setAttribute('stroke', color); line.setAttribute('stroke-width', st.shaft * k);
+    line.setAttribute('stroke-linejoin', 'miter'); line.setAttribute('stroke-linecap', 'butt');
+    shape.appendChild(line);
+    const head = document.createElementNS(SVG_NS, 'polygon');
+    head.setAttribute('points', to.x + ',' + to.y + ' ' + (bx - uy * headW / 2) + ',' + (by + ux * headW / 2) + ' ' + (bx + uy * headW / 2) + ',' + (by - ux * headW / 2));
+    head.setAttribute('fill', color);
+    if (covered) {
+      head.setAttribute('stroke', '#ffffff'); head.setAttribute('stroke-width', '0.5'); head.setAttribute('stroke-linejoin', 'round');
+    }
+    shape.appendChild(head);
+    g.appendChild(shape);
+
+    if (labelText) {
+      const txt = document.createElementNS(SVG_NS, 'text');
+      txt.setAttribute('x', Math.min(95, Math.max(5, bx - uy * 4.2))); txt.setAttribute('y', Math.min(95, Math.max(5, by + ux * 4.2)) + 0.5);
+      txt.setAttribute('font-size', '2.2'); txt.setAttribute('font-weight', 'bold'); txt.setAttribute('text-anchor', 'middle'); txt.setAttribute('fill', '#fff');
+      txt.setAttribute('stroke', '#14181f'); txt.setAttribute('stroke-width', '0.7'); txt.setAttribute('paint-order', 'stroke');
+      txt.textContent = labelText;
+      g.appendChild(txt);
+    }
+    return { body: g, badge: null };
+  }
+
+  // Respuesta esperada del rival a la mejor jugada: flecha gris, fina y discontinua, sin número
+  function drawReplyArrow(from, to) {
+    const dx = to.x - from.x; const dy = to.y - from.y;
+    const len = Math.sqrt(dx * dx + dy * dy); if (!len) return null;
+    const ux = dx / len; const uy = dy / len;
+    const g = document.createElementNS(SVG_NS, 'g');
+    g.setAttribute('opacity', '0.7');
+    const sx = to.x - ux * 3; const sy = to.y - uy * 3;
+    const line = document.createElementNS(SVG_NS, 'line');
+    line.setAttribute('x1', from.x + ux * 2); line.setAttribute('y1', from.y + uy * 2);
+    line.setAttribute('x2', sx); line.setAttribute('y2', sy);
+    line.setAttribute('stroke', '#c9ccd1'); line.setAttribute('stroke-width', '1.3'); line.setAttribute('stroke-dasharray', '2 1.4');
+    g.appendChild(line);
+    const poly = document.createElementNS(SVG_NS, 'polygon');
+    poly.setAttribute('points', to.x + ',' + to.y + ' ' + (sx - uy * 1.4) + ',' + (sy + ux * 1.4) + ' ' + (sx + uy * 1.4) + ',' + (sy - ux * 1.4));
+    poly.setAttribute('fill', '#c9ccd1');
+    g.appendChild(poly);
+    return g;
+  }
+
   // ¿b sale de la misma casilla que a y en la misma dirección? (una tapa a la otra)
   function sameRay(a, b) {
     if (a.from.x !== b.from.x || a.from.y !== b.from.y) return false;
@@ -1019,11 +1128,37 @@
     return Math.abs(cross) < 0.01 && dot > 0;
   }
 
+  // Tras una jugada, las flechas anteriores se dejan atenuadas un momento en vez de borrarlas,
+  // para que el tablero no parpadee mientras llega el análisis de la posición nueva.
+  let holdSince = 0;
+  let linesListed = false; // chess.com muestra ahora su panel de líneas (lo actualiza el bucle principal)
+  let holdTimer = null;
+  function holdArrows(overlay, isFlipped, source) {
+    const now = Date.now();
+    if (overlay.getAttribute('data-sig')) {
+      if (!holdSince) holdSince = now;
+      if (now - holdSince < 600) {
+        overlay.style.opacity = '0.35';
+        if (!holdTimer) holdTimer = setTimeout(() => { holdTimer = null; schedule(); }, 620);
+        return;
+      }
+    }
+    render(overlay, null, isFlipped, source);
+  }
+
+  function scoresVisible() {
+    return linesListed ? !!CONFIG.scoresWithLines : !!CONFIG.scoresWatch;
+  }
+
   // Dibuja la lista de flechas [{rank, from, to, label}]; solo toca el DOM si algo cambió
   function render(overlay, arrows, isFlipped, source) {
-    const list = arrows || [];
+    const all = arrows || [];
+    const reply = all.filter(a => a.reply)[0] || null;
+    const list = all.filter(a => !a.reply);
+    if (list.length) holdSince = 0;
+    if (overlay.style.opacity) overlay.style.opacity = '';
     const sig = list.length
-      ? source + '|' + (isFlipped ? 'f' : 'n') + '|' + list.map(a => a.rank + a.from + a.to + '=' + a.label).join(',')
+      ? source + '|' + CONFIG.arrowStyle + (scoresVisible() ? 's' : '') + '|' + (isFlipped ? 'f' : 'n') + '|' + list.map(a => a.rank + a.from + a.to + '=' + a.label).join(',') + (reply ? '|r' + reply.from + reply.to : '')
       : '';
     if (overlay.getAttribute('data-sig') === sig) return;
     overlay.setAttribute('data-sig', sig);
@@ -1055,12 +1190,25 @@
       }
     }
 
+    if (reply) {
+      const rf = squareToCoords(reply.from, isFlipped); const rt = squareToCoords(reply.to, isFlipped);
+      const rEl = rf && rt ? drawReplyArrow(rf, rt) : null;
+      if (rEl) overlay.appendChild(rEl); // debajo de las demás flechas
+    }
+
+    const nativeStyle = NATIVE_STYLES[CONFIG.arrowStyle] || null;
     const badges = [];
     items.forEach(it => {
-      const el = drawArrow(it.from, it.to, it.config, it.a.label, it.a.rank);
+      const label = scoresVisible() ? it.a.label : '';
+      // Si una flecha mejor sale de la misma casilla, el número de esta va sobre su propio trazo
+      const shared = items.some(o => o !== it && o.a.rank < it.a.rank && o.from.x === it.from.x && o.from.y === it.from.y);
+      const badgeAt = shared ? { x: it.from.x + it.dx * 0.62, y: it.from.y + it.dy * 0.62 } : null;
+      const el = nativeStyle
+        ? drawNativeArrow(it.from, it.to, nativeStyle, it.a.rank, label, items.some(o => o !== it && o.len > it.len && sameRay(it, o)))
+        : drawArrow(it.from, it.to, it.config, label, it.a.rank, badgeAt);
       if (!el) return;
       overlay.appendChild(el.body);
-      badges.push({ rank: it.a.rank, node: el.badge });
+      if (el.badge) badges.push({ rank: it.a.rank, node: el.badge });
     });
     // Las insignias al final, la del número 1 encima si comparten casilla
     badges.sort((x, y) => y.rank - x.rank).forEach(b => overlay.appendChild(b.node));
@@ -1074,15 +1222,17 @@
     const ES = /^es/i.test(document.documentElement.lang || navigator.language || '');
     const T = ES
       ? { title: 'Flechas · ajustes', multiPv: 'Flechas', maxTimeMs: 'Tiempo de búsqueda', maxDepth: 'Profundidad máx.', hashMb: 'Memoria',
-          prefer: 'Usar siempre el motor propio',
+          ownEngineOnly: 'Ignorar las líneas de chess.com (solo motor propio)', showReply: 'Mostrar la respuesta esperada (flecha gris)', scoresWatch: 'Evaluación junto a las flechas al mirar partidas (Watch)', scoresWithLines: 'Evaluación junto a las flechas donde chess.com lista líneas (Events, Análisis)',
+          arrowStyle: 'Estilo de las flechas', style_color: 'Colores numerados', style_chesscom: 'Como chess.com (naranja)', style_lichess: 'Como Lichess (azul y gris)', hideWorseBy: 'Ocultar flechas peores por', tag: 'flechas',
           own: 'Motor propio', depth: 'profundidad', dom: 'Flechas leídas de las líneas de chess.com. Si pides más de las que chess.com lista, las que faltan las calcula el motor propio con estos ajustes.', idle: 'Sin análisis en este momento.', reset: 'Restablecer' }
       : { title: 'Arrows · settings', multiPv: 'Arrows', maxTimeMs: 'Search time', maxDepth: 'Max depth', hashMb: 'Memory',
-          prefer: 'Always use own engine',
+          ownEngineOnly: 'Ignore chess.com\'s lines (own engine only)', showReply: 'Show the expected reply (grey arrow)', scoresWatch: 'Evaluation next to the arrows while watching games (Watch)', scoresWithLines: 'Evaluation next to the arrows where chess.com lists lines (Events, Analysis)',
+          arrowStyle: 'Arrow style', style_color: 'Numbered colours', style_chesscom: 'Like chess.com (orange)', style_lichess: 'Like Lichess (blue and grey)', hideWorseBy: 'Hide arrows worse by', tag: 'arrows',
           own: 'Own engine', depth: 'depth', dom: 'Arrows read from chess.com\'s engine lines. If you ask for more than chess.com lists, the script\'s own engine adds the missing ones with these settings.', idle: 'No analysis right now.', reset: 'Reset' };
-    const DEFAULTS = {};
-    SETTING_DEFS.forEach(def => { DEFAULTS[def.key] = def.key === 'multiPv' ? 3 : def.key === 'maxTimeMs' ? 8000 : def.key === 'maxDepth' ? 18 : 16; });
+    const DEFAULTS = SETTING_DEFAULTS;
 
-    let btn = null, panel = null, box = null, modalSection = null, statusEl = null, preferBox = null, open = false, applyTimer = null;
+    let btn = null, panel = null, box = null, modalSection = null, statusEl = null, styleSel = null, open = false, applyTimer = null, engineDirty = false;
+    const boolBoxes = {};
     const rows = {};
 
     function el(tag, css, text) {
@@ -1101,15 +1251,18 @@
         r.input.value = String(sliderPos(def));
         r.value.textContent = def.fmt(CONFIG[def.key]);
       });
-      if (preferBox) preferBox.checked = !!CONFIG.preferOwnEngine;
+      BOOL_SETTINGS.forEach(k => { if (boolBoxes[k]) boolBoxes[k].checked = !!CONFIG[k]; });
+      if (styleSel) styleSel.value = CONFIG.arrowStyle;
     }
 
-    function changed() {
+    // needEngine: el cambio afecta al cálculo (no solo al dibujo) y hay que repetir el análisis
+    function changed(needEngine) {
+      if (needEngine) engineDirty = true;
       saveSettings();
       syncRows();
       // Mientras se arrastra el deslizador no se reinicia el motor en cada paso
       clearTimeout(applyTimer);
-      applyTimer = setTimeout(() => { applyTimer = null; Engine.reconfigure(); schedule(); }, 250);
+      applyTimer = setTimeout(() => { applyTimer = null; if (engineDirty) { engineDirty = false; Engine.reconfigure(); } schedule(); }, 250);
     }
 
     function build() {
@@ -1128,6 +1281,18 @@
       panel.id = 'top3arrows-settings-panel';
       panel.appendChild(el('div', 'font-weight:600;margin-bottom:8px;', T.title));
 
+      const styleRow = el('div', 'margin-bottom:10px;');
+      styleRow.appendChild(el('div', 'margin-bottom:3px;', T.arrowStyle));
+      styleSel = el('select', 'width:100%;box-sizing:border-box;background:#3c3a37;color:#e8e6e3;border:1px solid #5a5856;border-radius:4px;padding:4px 6px;font:inherit;cursor:pointer;');
+      ARROW_STYLES.forEach(s => { const o = el('option', '', T['style_' + s]); o.value = s; styleSel.appendChild(o); });
+      styleSel.addEventListener('change', () => {
+        if (ARROW_STYLES.indexOf(styleSel.value) === -1) return;
+        CONFIG.arrowStyle = styleSel.value;
+        changed(false);
+      });
+      styleRow.appendChild(styleSel);
+      box.appendChild(styleRow);
+
       SETTING_DEFS.forEach(def => {
         const row = el('div', 'margin-bottom:8px;');
         const head = el('div', 'display:flex;justify-content:space-between;margin-bottom:2px;');
@@ -1144,20 +1309,23 @@
           const v = def.values ? def.values[n] : n;
           if (!isValidSetting(def, v) || v === CONFIG[def.key]) return;
           CONFIG[def.key] = v;
-          changed();
+          changed(def.key !== 'hideWorseBy');
         });
         row.appendChild(head); row.appendChild(input);
         box.appendChild(row);
         rows[def.key] = { input, value };
       });
 
-      const preferRow = el('label', 'display:flex;align-items:center;gap:6px;margin-bottom:8px;cursor:pointer;');
-      preferBox = el('input', 'margin:0;accent-color:#81b64c;cursor:pointer;');
-      preferBox.type = 'checkbox';
-      preferBox.addEventListener('change', () => { CONFIG.preferOwnEngine = preferBox.checked; changed(); });
-      preferRow.appendChild(preferBox);
-      preferRow.appendChild(el('span', '', T.prefer));
-      box.appendChild(preferRow);
+      BOOL_SETTINGS.forEach(k => {
+        const boolRow = el('label', 'display:flex;align-items:center;gap:6px;margin-bottom:8px;cursor:pointer;');
+        const cb = el('input', 'margin:0;accent-color:#81b64c;cursor:pointer;');
+        cb.type = 'checkbox';
+        cb.addEventListener('change', () => { CONFIG[k] = cb.checked; changed(false); });
+        boolRow.appendChild(cb);
+        boolRow.appendChild(el('span', '', T[k]));
+        box.appendChild(boolRow);
+        boolBoxes[k] = cb;
+      });
 
       statusEl = el('div', 'color:#a8a6a2;font-size:12px;min-height:16px;margin-bottom:8px;');
       box.appendChild(statusEl);
@@ -1165,8 +1333,9 @@
       reset.type = 'button';
       reset.addEventListener('click', () => {
         SETTING_DEFS.forEach(def => { CONFIG[def.key] = DEFAULTS[def.key]; });
-        CONFIG.preferOwnEngine = true;
-        changed();
+        BOOL_SETTINGS.forEach(k => { CONFIG[k] = DEFAULTS[k]; });
+        CONFIG.arrowStyle = DEFAULTS.arrowStyle;
+        changed(true);
       });
       box.appendChild(reset);
       panel.appendChild(box);
@@ -1223,10 +1392,26 @@
       if (statusEl.textContent !== txt) statusEl.textContent = txt;
     }
 
+    // Profundidad del motor propio junto al "depth=N" de chess.com (que es la de su motor)
+    function syncDepthTag() {
+      let tag = document.getElementById('top3arrows-depth');
+      const host = CONFIG.showDepthTag ? document.querySelector('wc-evaluation-depth') : null;
+      const d = lastSource === 'engine' ? Engine.status().depth : null;
+      if (!host || !host.parentNode || !d) { if (tag && tag.parentNode) tag.parentNode.removeChild(tag); return; }
+      if (!tag) { tag = el('span', 'opacity:.8;'); tag.id = 'top3arrows-depth'; }
+      if (host.nextSibling !== tag) host.parentNode.insertBefore(tag, host.nextSibling);
+      const txt = ' | ' + T.tag + ' d=' + d;
+      if (tag.textContent !== txt) tag.textContent = txt;
+    }
+
     // Coloca (u oculta) el engranaje y el panel según el estado actual
     function sync() {
       syncModal();
-      if (!CONFIG.ownGearButton) {
+      syncDepthTag();
+      // Sin sesión, el engranaje del tablero de chess.com abre el aviso de registro en vez de sus ajustes:
+      // ahí se muestra el engranaje propio.
+      const guest = document.querySelector('a[href*="/register"]') !== null;
+      if (!CONFIG.ownGearButton && !guest) {
         open = false;
         if (btn) { btn.style.display = 'none'; panel.style.display = 'none'; }
         return;
@@ -1266,7 +1451,21 @@
   let lastSource = 'none';
   let lastError = '';
 
+  let arrowsHidden = false; // Alt + tecla (CONFIG.hotkey) oculta o muestra las flechas; no se guarda
+
   function resetWait() { noLinesSince = 0; depthSeenSince = 0; }
+
+  function isFinishedAtEnd(boardEl) {
+    const game = getGame(boardEl);
+    if (!game) return false;
+    try {
+      if (typeof game.isGameOver !== 'function' || typeof game.isAtEndOfLine !== 'function') return false;
+      if (!game.isGameOver() || !game.isAtEndOfLine()) return false;
+      // Solo en la línea principal: al final de una variante propia sí interesa el análisis
+      const ids = typeof game.getNodeIds === 'function' ? game.getNodeIds() : null;
+      return !ids || ids.line === 0 || ids.line === undefined;
+    } catch (e) { return false; }
+  }
 
   function update() {
     scheduled = false;
@@ -1286,7 +1485,7 @@
     keepAnalysisOn(boardEl);
 
     const overlay = getOrCreateOverlay(boardEl);
-    if (!isAnalysisActive()) {
+    if (arrowsHidden || !isAnalysisActive()) {
       resetWait(); lastSource = 'off';
       Engine.release();
       render(overlay, null, false, 'off');
@@ -1296,12 +1495,21 @@
 
     const isFlipped = boardEl.classList.contains('flipped');
 
+    // Partida terminada y tablero en su última jugada: no hay nada que sugerir
+    if (CONFIG.hideAtGameEnd && isFinishedAtEnd(boardEl)) {
+      resetWait(); lastSource = 'none';
+      Engine.release();
+      render(overlay, null, isFlipped, 'none');
+      return;
+    }
+
     // 1) Camino normal: chess.com muestra las líneas de su motor → se leen del DOM
     const lines = getAnalysisLines();
+    linesListed = lines.length > 0;
 
     // 0) "Usar siempre el motor propio": igual que en Watch, todas las flechas salen del mismo motor
     //    y respetan los ajustes del panel. Mientras calcula se muestran las líneas de chess.com (paso 1).
-    const preferOwn = CONFIG.preferOwnEngine && lines.length > 0 && isFallbackAllowed(boardEl);
+    const preferOwn = CONFIG.ownEngineOnly && lines.length > 0 && isFallbackAllowed(boardEl);
     if (preferOwn) {
       const fen = getPositionFen(boardEl);
       const res = fen ? Engine.getResult(fen) : null;
@@ -1320,7 +1528,8 @@
       const arrows = [];
       lines.forEach(line => {
         const move = resolveLineMove(line, legal, pieces);
-        if (move) arrows.push({ rank: line.rank, from: move.from, to: move.to, label: line.score });
+        // chess.com a veces repite una jugada en dos líneas mientras las actualiza: se dibuja una sola vez
+        if (move && !arrows.some(a => a.from === move.from && a.to === move.to)) arrows.push({ rank: line.rank, from: move.from, to: move.to, label: line.score });
       });
 
       // chess.com lista menos líneas que las flechas pedidas en el panel (su ajuste "Engine Lines"
@@ -1398,7 +1607,7 @@
     Engine.request(fen);
     const res = Engine.getResult(fen);
     if (!res || (res.depth < CONFIG.minDepthToDraw && !res.done)) {
-      render(overlay, null, isFlipped, 'engine'); // posición nueva: se borran las flechas anteriores
+      holdArrows(overlay, isFlipped, 'engine'); // posición nueva: las flechas anteriores se atenúan un instante y luego se borran
       return;
     }
     render(overlay, engineArrows(res), isFlipped, 'engine');
@@ -1406,12 +1615,23 @@
 
   function engineArrows(res) {
     const whiteToMove = res.turn !== 'b';
-    return res.lines.slice(0, CONFIG.multiPv).map(l => ({
+    // Valor comparable entre líneas (desde el lado que mueve); un mate vale más que cualquier ventaja
+    const cp = l => l.type === 'mate' ? (l.value > 0 ? 100000 - l.value : -100000 - l.value) : l.value;
+    let lines = res.lines.slice(0, CONFIG.multiPv);
+    if (CONFIG.hideWorseBy > 0 && lines.length) {
+      const best = cp(lines[0]);
+      lines = lines.filter((l, i) => i === 0 || best - cp(l) <= CONFIG.hideWorseBy);
+    }
+    const arrows = lines.map(l => ({
       rank: l.rank,
       from: l.move.slice(0, 2),
       to: l.move.slice(2, 4),
       label: formatEngineScore(l, whiteToMove)
     }));
+    if (CONFIG.showReply && lines.length && lines[0].reply) {
+      arrows.push({ reply: true, rank: 0, from: lines[0].reply.slice(0, 2), to: lines[0].reply.slice(2, 4), label: '' });
+    }
+    return arrows;
   }
 
   function schedule() {
@@ -1430,6 +1650,16 @@
       const t = e.target;
       if (t && t.closest && (t.id === 'evaluationSettings' || t.closest('label[for="evaluationSettings"]'))) userSwitchClickAt = Date.now();
     }, true);
+
+    document.addEventListener('keydown', e => {
+      if (!CONFIG.hotkey || !e.altKey || e.ctrlKey || e.metaKey || e.repeat) return;
+      if (String(e.key).toLowerCase() !== String(CONFIG.hotkey).toLowerCase()) return;
+      const k = e.target;
+      if (k && (k.isContentEditable || /^(input|textarea|select)$/i.test(k.tagName || ''))) return; // no mientras se escribe (chat, buscador)
+      arrowsHidden = !arrowsHidden;
+      e.preventDefault();
+      schedule();
+    });
 
     document.addEventListener('change', e => {
       const t = e.target;
@@ -1473,14 +1703,14 @@
   }
 
   PAGE.__top3ArrowsHybrid = {
-    version: '9.4.0',
+    version: '9.6.4',
     config: CONFIG,
     refresh: update,
     // timeline: ms desde que empezó a cargar la página hasta cada etapa (script, board, analysisOn, engineBoot, engineReady, arrows)
     status: () => ({ source: lastSource, keepAnalysis: keepPref, timeline: Object.assign({}, timeline), engine: Engine.status() })
   };
 
-  info('v9.4.0 cargado.');
+  info('v9.6.4 cargado.');
 
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', init);
   else init();
