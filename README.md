@@ -24,6 +24,25 @@ The settings sit at the top of the **Analysis** tab of chess.com's own settings 
 
 ![chess.com's settings window with the "Arrows · settings" block above its engine options](docs/images/settings-block.png)
 
+What each control in that block does, from top to bottom:
+
+| Control | What it does |
+|---|---|
+| **Arrow style** | How the arrows look: like chess.com's own orange arrows (default), numbered colours, or like Lichess (blue and grey). |
+| **Arrows** | How many moves are drawn, from 1 to 5. Default 3. |
+| **Search time** | The longest the script's engine thinks about one position, from 1 to 30 seconds. Default 8 s. |
+| **Max depth** | The script's engine stops when it reaches this depth, or when the search time runs out, whichever comes first. From 10 to 40. Default 18. |
+| **Memory** | Memory (hash table) the script's engine may use, from 16 to 512 MB. Default 16 MB. |
+| **Hide arrows worse by** | Hides arrows that lose more than this many pawns compared with the best move (0.5 to 3.0). Off by default, shown as `—`. |
+| **Evaluation next to the arrows while watching games (Watch)** | Shows the number (for example `+0.36`) at each arrowhead on pages where chess.com shows only the evaluation bar. On by default. |
+| **Evaluation next to the arrows where chess.com lists lines (Events, Analysis)** | Shows the same number on pages that already list the engine lines beside the board. Off by default. |
+| **Show the expected reply (grey arrow)** | Adds a thin grey dashed arrow with the opponent's expected answer to the best move. Off by default. |
+| **Ignore chess.com's lines (own engine only)** | Off: where chess.com lists engine lines, the arrows follow that list and the script's engine only adds the ones chess.com does not list. On: every arrow comes from the script's engine, so its order can differ from chess.com's list. |
+| Status line | Where the arrows are coming from right now and, for the script's engine, its current depth. |
+| **Reset** | Puts every control above back to its default. |
+
+Changes apply at once and are remembered in the browser; chess.com's **Save** and **Cancel** buttons do not affect them. The three sliders for search time, depth and memory only matter for arrows that come from the script's engine.
+
 ## Where it works
 
 | Page | What chess.com shows there |
