@@ -56,7 +56,7 @@ To update, download the ZIP again, replace the folder and press the reload icon 
 
 1. Open [chess.com/analysis](https://www.chess.com/analysis), or any game, and turn on chess.com's **Analysis** switch.
 2. The arrows appear on the board and follow every move.
-3. Optional: in the browser console (F12 → **Console**) you should see `[Top3 Arrows] v9.7.0 cargado.`
+3. Optional: in the browser console (F12 → **Console**) you should see `[Top3 Arrows] v9.8.0 cargado.`
 
 The settings are at the top of the **Analysis** tab of chess.com's own settings window (the gear next to the board). See [Settings](#settings).
 
@@ -67,6 +67,10 @@ The settings are at the top of the **Analysis** tab of chess.com's own settings 
 - Chrome and similar: `chrome://extensions` → **Remove** on the extension's card.
 
 The settings are stored in chess.com's local storage under `top3arrows_settings`; clearing chess.com's site data removes them.
+
+## What's new in 9.8.0
+
+- **Follow chess.com's depth** (new, on by default): while you watch a game, the arrows' engine now searches as deep as chess.com's own engine (the `depth=N` next to the Analysis switch) instead of stopping at depth 18 or after 8 s. It stops when chess.com stops going deeper and resumes if chess.com goes deeper later; limits are depth 40 and 60 s per position. It uses more CPU; turn it off in the settings to go back to **Max depth** and **Search time**.
 
 ## What's new in 9.7.0
 
@@ -126,8 +130,8 @@ What each control in that block does, from top to bottom:
 |---|---|
 | **Arrow style** | How the arrows look: like chess.com's own orange arrows (default), numbered colours, or like Lichess (blue and grey). |
 | **Arrows** | How many moves are drawn, from 1 to 5. Default 3. |
-| **Search time** | The longest the script's engine thinks about one position, from 1 to 30 seconds. Default 8 s. |
-| **Max depth** | The script's engine stops when it reaches this depth, or when the search time runs out, whichever comes first. From 10 to 40. Default 18. |
+| **Search time** | The longest the script's engine thinks about one position, from 1 to 30 seconds. Default 8 s. Not used while **Follow chess.com's depth** is on. |
+| **Max depth** | The script's engine stops when it reaches this depth, or when the search time runs out, whichever comes first. From 10 to 40. Default 18. Not used while **Follow chess.com's depth** is on, unless chess.com shows no depth. |
 | **Memory** | Memory (hash table) the script's engine may use, from 16 to 512 MB. Default 16 MB. |
 | **Hide arrows worse by** | Hides arrows that lose more than this many pawns compared with the best move (0.5 to 3.0). Off by default, shown as `—`. |
 | **Evaluation next to the arrows while watching games (Watch)** | Shows the number (for example `+0.36`) at each arrowhead on pages where chess.com shows only the evaluation bar. On by default. |
@@ -136,6 +140,7 @@ What each control in that block does, from top to bottom:
 | **Ignore chess.com's lines (own engine only)** | Off: where chess.com lists engine lines, the arrows follow that list and the script's engine only adds the ones chess.com does not list. On: every arrow comes from the script's engine, so its order can differ from chess.com's list. |
 | **Arrow width follows the evaluation** | The more a move loses compared with the best one, the thinner its arrow, as on Lichess. Off by default. |
 | **Show the line when the mouse is on an arrow's target square** | Point at the square an arrow lands on and the rest of that line appears as thin numbered arrows. Only for arrows from the script's engine. Off by default. |
+| **Follow chess.com's depth** | The script's engine keeps searching until it reaches the depth chess.com shows (`depth=N`), instead of stopping at **Max depth** or **Search time**. It stops once chess.com stops going deeper, and resumes if chess.com goes deeper later. Limits: depth 40, 60 s per position. Uses more CPU. On by default. |
 | Status line | Where the arrows are coming from right now and, for the script's engine, its current depth. |
 | **Reset** | Puts every control above back to its default. |
 
@@ -165,7 +170,7 @@ Where chess.com shows engine lines, the arrows follow them and the script's own 
 - **Watching a game** (chess.com shows only the evaluation bar): all arrows come from the script's own engine, and each one carries its evaluation, for example `+0.36`. The arrows appear about half a second after the switch is on and keep improving up to the chosen depth.
 - **Events, the Analysis page, the Analysis tab of a finished game** (chess.com lists engine lines beside the board): the arrows follow that list, first line first, so the board always agrees with the panel. The numbers are not repeated on the board. If you ask for more arrows than chess.com lists, the script's engine adds the missing ones.
 - The evaluation is always from White's side, the convention chess.com uses. While watching, the number comes from the script's engine and the evaluation bar from chess.com's, so the two can differ slightly.
-- Next to chess.com's `depth=N` the script shows the depth of its own engine (`arrows d=18`) whenever the arrows come from it.
+- Next to chess.com's `depth=N` the script shows the depth of its own engine (`arrows d=18`) whenever the arrows come from it. They are two separate engines. With **Follow chess.com's depth** (on by default) the script's engine goes as deep as chess.com's; it may end one level deeper, because it finishes the level it is on. Turn it off and the script's engine stops at **Max depth** (18) or after **Search time** (8 s), whichever comes first.
 
 Each of these defaults has a control in the settings.
 
@@ -203,6 +208,7 @@ When you are not signed in, chess.com's board gear opens a sign-up prompt instea
 | Show the expected reply | off | A thin grey dashed arrow with the opponent's expected answer to the best move. Where chess.com lists lines, it is shown once the script's engine agrees with chess.com's best move |
 | Arrow width follows the evaluation | off | Arrows that lose more against the best move are thinner |
 | Show the line when the mouse is on an arrow's target square | off | The rest of that line, as thin numbered arrows (script's engine only) |
+| Follow chess.com's depth | on | The script's engine searches as deep as chess.com's engine (`depth=N` next to the switch) and ignores Max depth and Search time; up to depth 40 or 60 s per position |
 
 **Hide arrows worse by** works on every page: it compares chess.com's own numbers where it lists lines, and the script engine's numbers elsewhere.
 
@@ -218,7 +224,7 @@ The remaining options are in [`src/config.js`](src/config.js) (run `npm run buil
 | `fairPlayModes` | `['analysis', 'observing', 'review']` | Board modes in which the script's engine may run. Any other mode, or a mode that cannot be read, keeps it off |
 | `keepAnalysisOnWhileWatching` | `true` | Switch chess.com's Analysis back on when it resets it while you are watching |
 | `multiPv`, `maxTimeMs`, `maxDepth`, `hashMb`, `hideWorseBy` | `3`, `8000`, `18`, `16`, `0` | Starting values for the sliders above |
-| `arrowStyle`, `scoresWatch`, `scoresWithLines`, `showReply`, `ownEngineOnly`, `widthByEval`, `pvOnHover` | `'chesscom'`, `true`, `false`, `false`, `false`, `false`, `false` | Starting values for the style selector and the checkboxes |
+| `arrowStyle`, `scoresWatch`, `scoresWithLines`, `showReply`, `ownEngineOnly`, `widthByEval`, `pvOnHover`, `followChessComDepth` | `'chesscom'`, `true`, `false`, `false`, `false`, `false`, `false`, `true` | Starting values for the style selector and the checkboxes |
 | `hideAtGameEnd` | `true` | No arrows on the final position of a finished game |
 | `hotkey` | `'a'` | Alt + this key hides or shows the arrows; `''` disables it |
 | `showDepthTag` | `true` | Show the script engine's depth next to chess.com's `depth=N` |
@@ -260,7 +266,7 @@ Using engine help in your own games breaks chess.com's Fair Play policy. This to
 
 Open the browser console on chess.com:
 
-- `[Top3 Arrows] v9.7.0 cargado.` confirms the script is running.
+- `[Top3 Arrows] v9.8.0 cargado.` confirms the script is running.
 - `__top3ArrowsHybrid.config()` returns a copy of the current settings (the console object is read-only, so the page cannot change them through it).
 - `__top3ArrowsHybrid.status()` shows where the arrows come from (`dom`, `engine`, `none` or `off`) and the engine's state.
 - If the arrows are slow to appear, `status().timeline` tells which stage took the time. It gives the milliseconds from the start of the page load to each step: `script`, `board`, `analysisOn`, `engineBoot`, `engineReady` and `arrows`.

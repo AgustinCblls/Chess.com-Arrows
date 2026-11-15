@@ -19,6 +19,7 @@ export const CONFIG = {
   showReply: false,           // flecha gris con la respuesta esperada del rival a la mejor jugada
   hideWorseBy: 0,             // oculta las flechas que pierden más de estos centipeones frente a la mejor (0 = no ocultar)
   widthByEval: false,         // el grosor de cada flecha depende de cuánto pierde frente a la mejor (como Lichess)
+  followChessComDepth: true,  // el motor propio busca hasta la profundidad que muestra chess.com (ignora máx. y tiempo; tope 40 / 60 s)
   pvOnHover: false,           // al pasar el ratón por la casilla de destino de una flecha se ve su variante
   ownGearButton: false,       // true = además, engranaje propio flotante en la esquina del tablero
   hideAtGameEnd: true,        // sin flechas en la posición final de una partida terminada
@@ -53,15 +54,15 @@ export const SETTING_DEFS = [
   { key: 'hashMb', values: HASH_STEPS, fmt: v => v + ' MB' },
   { key: 'hideWorseBy', values: [0, 50, 100, 150, 200, 300], fmt: v => v ? (v / 100).toFixed(1) : '—' }
 ];
-export const BOOL_SETTINGS = ['scoresWatch', 'scoresWithLines', 'showReply', 'ownEngineOnly', 'widthByEval', 'pvOnHover'];
+export const BOOL_SETTINGS = ['scoresWatch', 'scoresWithLines', 'showReply', 'ownEngineOnly', 'widthByEval', 'pvOnHover', 'followChessComDepth'];
 export const ARROW_STYLES = ['chesscom', 'color', 'lichess'];
 export const SETTING_DEFAULTS = {
   multiPv: 3, maxTimeMs: 8000, maxDepth: 18, hashMb: 16, hideWorseBy: 0,
   ownEngineOnly: false, scoresWatch: true, scoresWithLines: false, showReply: false,
-  widthByEval: false, pvOnHover: false, arrowStyle: 'chesscom'
+  widthByEval: false, pvOnHover: false, followChessComDepth: true, arrowStyle: 'chesscom'
 };
 // Ajustes que cambian lo que calcula el motor (los demás solo cambian el dibujo)
-export const ENGINE_SETTINGS = ['multiPv', 'maxTimeMs', 'maxDepth', 'hashMb'];
+export const ENGINE_SETTINGS = ['multiPv', 'maxTimeMs', 'maxDepth', 'hashMb', 'followChessComDepth'];
 
 export function isValidSetting(def, v) {
   if (typeof v !== 'number' || !isFinite(v)) return false;

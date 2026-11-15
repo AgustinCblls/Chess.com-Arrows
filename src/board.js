@@ -231,6 +231,13 @@ export function hasLinesPanel() {
   return document.querySelector(SEL.linesPanel) !== null;
 }
 
+// Profundidad que muestra el motor de chess.com ("depth=23") o null
+export function chessComDepth() {
+  const el = document.querySelector(SEL.evalDepth);
+  const m = el && /=\s*(\d+)/.exec(el.textContent || '');
+  return m ? parseInt(m[1], 10) : null;
+}
+
 // El motor de chess.com ya está calculando: muestra "depth=N" junto al switch
 export function chessComEngineShowsDepth() {
   const el = document.querySelector(SEL.evalDepth);

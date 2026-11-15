@@ -124,7 +124,7 @@ export function createUI(Engine) {
       const boolRow = el('label', 'check');
       const cb = el('input');
       cb.type = 'checkbox';
-      cb.addEventListener('change', () => { CONFIG[k] = cb.checked; changed(false); });
+      cb.addEventListener('change', () => { CONFIG[k] = cb.checked; changed(ENGINE_SETTINGS.indexOf(k) !== -1); });
       boolRow.appendChild(cb);
       boolRow.appendChild(el('span', '', T[k]));
       box.appendChild(boolRow);

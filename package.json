@@ -1,6 +1,6 @@
 {
   "name": "chesscom-arrows",
-  "version": "9.7.0",
+  "version": "9.8.0",
   "private": true,
   "description": "Engine move arrows for chess.com analysis and watched games (userscript + browser extension).",
   "type": "module",

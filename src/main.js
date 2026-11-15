@@ -4,7 +4,7 @@ import { info, warn, log, diag, diagSave, diagText, diagClear, markOnce, timelin
 import { state, setScheduler } from './state.js';
 import {
   getMainBoard, getGame, getModeName, isFlipped, getBoardPieces, getLegalInfo, getPositionFen,
-  getAnalysisLines, hasLinesPanel, chessComEngineShowsDepth, classNameOf
+  getAnalysisLines, hasLinesPanel, chessComEngineShowsDepth, chessComDepth, classNameOf
 } from './board.js';
 import { resolveLineMove, parseScoreText, comparableScore } from './san.js';
 import { fenTurnWhite, coordsToSquare } from './fen.js';
@@ -155,11 +155,27 @@ const PAGE = (typeof unsafeWindow !== 'undefined' && unsafeWindow) ? unsafeWindo
     return arrows;
   }
 
+  // "Seguir la profundidad de chess.com": se le pasa al motor la profundidad que muestra chess.com
+  // y si dejó de subir (sin cambios durante FOLLOW_STABLE_MS)
+  const FOLLOW_STABLE_MS = 1500;
+  let ccDepth = null, ccDepthAt = 0, followTimer = null;
+  function syncFollowDepth() {
+    if (!CONFIG.followChessComDepth) return;
+    const d = chessComDepth();
+    const now = Date.now();
+    if (d !== ccDepth) { ccDepth = d; ccDepthAt = now; }
+    const stable = now - ccDepthAt >= FOLLOW_STABLE_MS;
+    Engine.setTargetDepth(d, stable);
+    // Volver a mirar cuando se cumpla el plazo, aunque la página no cambie
+    if (!stable && !followTimer) followTimer = setTimeout(() => { followTimer = null; schedule(); }, FOLLOW_STABLE_MS - (now - ccDepthAt) + 20);
+  }
+
   function updateInner(boardEl) {
     if (!boardEl) { resetWait(); state.lastSource = 'none'; Engine.release(); return; }
     if (getGame(boardEl)) { markOnce('board'); runSelfCheck(boardEl); }
 
     keepAnalysisOn(boardEl, () => Engine.prewarm());
+    syncFollowDepth();
 
     const overlay = getOrCreateOverlay(boardEl);
     if (state.arrowsHidden || !isAnalysisActive(boardEl)) {

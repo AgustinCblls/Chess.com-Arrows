@@ -2,6 +2,7 @@
 import { CONFIG, CDN_ENGINES, BUNDLED_ENGINE } from './config.js';
 import { log, info, warn, diag, markOnce } from './log.js';
 import { parseInfoLine, createLineCollector } from './uci.js';
+import { followAction, FOLLOW_MAX_DEPTH, FOLLOW_MAX_MS } from './follow.js';
 
 export function createEngine(PAGE) {
   let worker = null;
@@ -22,6 +23,9 @@ export function createEngine(PAGE) {
   const collector = createLineCollector(() => CONFIG.multiPv);
   let result = null;        // { fen, turn, depth, lines: [{rank, move, reply, pv, type, value, depth}], done }
   let onUpdate = function () {};
+  // Seguir la profundidad de chess.com (CONFIG.followChessComDepth)
+  let targetDepth = null, targetStable = true; // lo que muestra chess.com y si dejó de subir
+  let searchStartedAt = 0, stopSent = false, cappedFen = null;
 
   function fetchVerified(url, integrity) {
     return fetch(url, { integrity, credentials: 'omit', mode: 'cors' })
@@ -245,6 +249,7 @@ export function createEngine(PAGE) {
       clearTimeout(stopTimer); stopTimer = null;
       clearTimeout(silenceTimer); silenceTimer = null;
       const stale = discard;
+      if (!stale && CONFIG.followChessComDepth && Date.now() - searchStartedAt >= FOLLOW_MAX_MS - 300) cappedFen = searchFen;
       searching = false; discard = false;
       if (!stale && result && result.fen === searchFen) {
         flushCommit();
@@ -262,9 +267,33 @@ export function createEngine(PAGE) {
     if (!result || discard) return false;
     const lines = collector.commit();
     if (!lines) return false;
+    if (result.lines.length && lines[0].depth < result.depth) return false; // búsqueda retomada: aún por debajo
     result.lines = lines;
     result.depth = lines[0].depth;
+    checkFollow();
     return true;
+  }
+
+  function followState() {
+    return {
+      target: targetDepth, stable: targetStable, ourDepth: result ? result.depth : 0,
+      searching: searching && !discard, stopSent, done: !!(result && result.done),
+      capped: !!(result && cappedFen === result.fen), maxDepth: CONFIG.maxDepth
+    };
+  }
+
+  // Con "seguir a chess.com": para la búsqueda al alcanzar su profundidad (sin descartarla)
+  function checkFollow() {
+    if (!CONFIG.followChessComDepth || state !== 'ready' || !result || result.fen !== searchFen) return;
+    if (followAction(followState()) === 'stop') { stopSent = true; post('stop'); }
+  }
+
+  // Profundidad que muestra chess.com en este momento (null si no se ve) y si dejó de subir
+  function setTargetDepth(depth, stable) {
+    targetDepth = depth; targetStable = stable;
+    if (!CONFIG.followChessComDepth) return;
+    checkFollow();
+    pump();
   }
 
   // Envía al motor los ajustes actuales (solo se llama cuando no hay una búsqueda en curso)
@@ -284,14 +313,19 @@ export function createEngine(PAGE) {
     pump();
   }
 
-  function start(fen) {
+  // keep: retomar la misma posición (seguir a chess.com) conservando las flechas que ya hay
+  function start(fen, keep) {
     if (optsDirty) applyOptions();
-    searching = true; discard = false; searchFen = fen;
+    searching = true; discard = false; searchFen = fen; stopSent = false;
+    searchStartedAt = Date.now();
     collector.reset();
-    result = { fen, turn: fen.split(' ')[1] === 'b' ? 'b' : 'w', depth: 0, lines: [], done: false };
-    log('analizando', fen);
+    if (keep && result && result.fen === fen) result.done = false;
+    else result = { fen, turn: fen.split(' ')[1] === 'b' ? 'b' : 'w', depth: 0, lines: [], done: false };
+    log(keep ? 'retomando' : 'analizando', fen);
     post('position fen ' + fen);
-    post('go depth ' + CONFIG.maxDepth + ' movetime ' + CONFIG.maxTimeMs);
+    post(CONFIG.followChessComDepth
+      ? 'go depth ' + FOLLOW_MAX_DEPTH + ' movetime ' + FOLLOW_MAX_MS
+      : 'go depth ' + CONFIG.maxDepth + ' movetime ' + CONFIG.maxTimeMs);
     // Vigilancia: a veces el worker se queda sin responder (visto al empezar una revancha). Si no dice
     // nada enseguida se reinicia; tras tres seguidas se trata como un fallo del motor.
     clearTimeout(silenceTimer);
@@ -310,7 +344,11 @@ export function createEngine(PAGE) {
 
   function pump() {
     if (state !== 'ready' || searching || !wantedFen) return;
-    if (result && result.fen === wantedFen) return; // ya analizada
+    if (result && result.fen === wantedFen) {
+      // ya analizada; con "seguir a chess.com" se retoma si chess.com llegó más hondo
+      if (CONFIG.followChessComDepth && followAction(followState()) === 'extend') start(wantedFen, true);
+      return;
+    }
     start(wantedFen);
   }
 
@@ -374,7 +412,7 @@ export function createEngine(PAGE) {
   function status() {
     return {
       state, label, boots: bootCount, searching, discard, searchFen, wantedFen,
-      depth: result ? result.depth : null,
+      depth: result ? result.depth : null, targetDepth, targetStable,
       done: result ? result.done : null,
       lines: result ? result.lines.map(l => l.rank + ':' + l.move + ' ' + l.type + ' ' + l.value + ' d' + l.depth) : []
     };
@@ -388,5 +426,5 @@ export function createEngine(PAGE) {
     if (wantedFen) boot();
   }
 
-  return { request, release, prewarm, reconfigure, getResult, status, forceReserveOnly, setOnUpdate: fn => { onUpdate = fn; } };
+  return { request, release, prewarm, reconfigure, getResult, status, forceReserveOnly, setTargetDepth, setOnUpdate: fn => { onUpdate = fn; } };
 }
