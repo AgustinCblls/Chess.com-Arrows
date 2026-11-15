@@ -120,27 +120,112 @@ export function localizedSanToEnglish(san, lang) {
   return out === san ? null : out;
 }
 
-// Resuelve la primera jugada de una línea de chess.com a {from, to}.
+// ¿En qué letras están escritas las líneas de chess.com? Algunas letras existen en los dos idiomas
+// con otro significado (en español R es Rey; en inglés, Rook = torre), así que no basta con mirar
+// una jugada: se cuentan las letras que solo existen en el idioma de la página (español: D, T, A, C)
+// y las que solo existen en inglés (K, Q, B, N) en todas las jugadas visibles.
+// Devuelve 'local', 'en' o null si no hay forma de saberlo.
+export function detectNotation(texts, lang) {
+  // Idioma sin tabla (ruso, etc.): cualquier mayúscula que no sea inglesa cuenta como letra local
+  const letters = PIECE_LETTERS[String(lang || '').slice(0, 2).toLowerCase()] || null;
+  let local = 0, en = 0;
+  const count = c => {
+    if (!c) return;
+    const inEn = 'KQRBN'.indexOf(c) !== -1;
+    const inLocal = letters ? letters.indexOf(c) !== -1 : !inEn;
+    if (inLocal && !inEn) local++;
+    else if (inEn && !inLocal) en++;
+  };
+  // Una mayúscula seguida de una casilla ("Tb1", "Dxd5", "Cbd7") o tras "=" en una coronación.
+  // El texto puede venir sin espacios entre jugadas ("25.Re2Da226.Tb1"), por eso se busca con regex.
+  (texts || []).forEach(t => {
+    const s = String(t || '');
+    let m;
+    const piece = /(\p{Lu})(?=[a-h]?[1-8]?x?[a-h][1-8])/gu;
+    while ((m = piece.exec(s))) count(m[1]);
+    const promo = /=(\p{Lu})/gu;
+    while ((m = promo.exec(s))) count(m[1]);
+  });
+  return local > en ? 'local' : (en > local ? 'en' : null);
+}
+
+export function hasLocalLetters(lang) {
+  return !!PIECE_LETTERS[String(lang || '').slice(0, 2).toLowerCase()];
+}
+
+// ─────────── Leer las letras de pieza sin depender del idioma ───────────
+// Letras que preceden a la casilla ("Кр" en "Кре2", "R" en "Re2") y el resto de la jugada
+function splitPiece(san) {
+  const m = /^([^a-h0-9x]*)(.*)$/u.exec(san);
+  return { lead: m[1], rest: m[2] };
+}
+
+// Aprende qué significa cada letra en el idioma de la página comparando la lista de jugadas de la
+// partida tal como la muestra chess.com (displayed) con las mismas jugadas en inglés (english,
+// de game.getHistorySANs()). Sirve para cualquier idioma, sin tabla. Devuelve {letra: 'KQRBN'} o null.
+export function learnPieceLetters(displayed, english) {
+  const map = {};
+  let n = 0;
+  for (let i = 0; i < Math.min(displayed.length, english.length); i++) {
+    if (displayed[i] == null || english[i] == null) continue;
+    const d = splitPiece(normalizeSan(displayed[i]));
+    const e = normalizeSan(english[i]);
+    if (!/^[KQRBN]/.test(e) || !d.lead || d.rest !== e.slice(1)) continue;
+    if (map[d.lead] && map[d.lead] !== e[0]) return null; // contradicción: la lista no corresponde
+    map[d.lead] = e[0];
+    n++;
+  }
+  return n ? map : null;
+}
+
+// Pasa una jugada a letras inglesas con un mapa {letra local: letra inglesa}
+export function translateWithMap(san, map) {
+  if (!map) return null;
+  const { lead, rest } = splitPiece(san);
+  let out = san;
+  if (lead) {
+    if (!map[lead]) return null;
+    out = map[lead] + rest;
+  }
+  const promo = /=(\p{L}+)$/u.exec(out);
+  if (promo && !/^[QRBN]$/.test(promo[1])) {
+    if (!map[promo[1]]) return null;
+    out = out.slice(0, promo.index) + '=' + map[promo[1]];
+  }
+  return out === san ? null : out;
+}
+
+// Resuelve la primera jugada de una línea de chess.com a {from, to}, en este orden:
+//  1. Figurines (iconos de pieza): su letra ya está en inglés.
+//  2. Una sola jugada legal coincide en todo salvo la letra de pieza ("?e2" → solo una pieza llega a e2):
+//     vale en cualquier idioma, sin traducir nada.
+//  3. Si varias piezas llegan a la misma casilla (en español "Re2" = rey, en inglés "Re2" = torre),
+//     decide la letra: con lo aprendido de la lista de jugadas de la página (learned), con la tabla
+//     del idioma de la página, o en inglés si las líneas están en inglés (notation === 'en').
 // legal: { bySan: Map, list, turnWhite } de las jugadas legales (o null sin API del tablero)
-export function resolveLineMove(line, legal, pieces, lang) {
+// notation: 'local' | 'en' | null, de detectNotation(). learned: de learnPieceLetters() o null.
+export function resolveLineMove(line, legal, pieces, lang, notation, learned) {
   let san = normalizeSan(line.moveText);
   if (!san) return null;
-  let moveText = line.moveText;
   // El turno real (del FEN) manda sobre lo que se deduce del texto de la línea
   const isWhite = legal && legal.turnWhite !== null && legal.turnWhite !== undefined ? legal.turnWhite : line.isWhite;
+
+  // Cómo pasar la letra a inglés, de lo más fiable a lo menos
+  const toEnglish = s => {
+    if (line.figurine || notation === 'en') return s;
+    return translateWithMap(s, learned) || (hasLocalLetters(lang) ? localizedSanToEnglish(s, lang) : null) || s;
+  };
+
   if (legal) {
-    let m = legal.bySan.get(san);
-    if (!m) {
-      // 1) Traducir las letras según el idioma de la página
-      const en = localizedSanToEnglish(san, lang);
-      if (en && legal.bySan.has(en)) { m = legal.bySan.get(en); san = en; }
-      if (en) moveText = en;
-    }
-    if (!m && /^[^a-hO0-9x]/.test(san)) {
-      // 2) Idioma sin tabla: vale si una sola jugada legal de pieza coincide en todo menos en la letra
-      const rest = san.replace(/^[^a-h0-9x]+/, '');
+    const { lead, rest } = splitPiece(san);
+    let m = null;
+    if (!lead || line.figurine) {
+      // Peones, enroques y figurines: ya están en inglés (salvo la letra de una coronación)
+      m = legal.bySan.get(san) || legal.bySan.get(toEnglish(san)) || null;
+    } else {
       const same = legal.list.filter(l => /^[KQRBN]/.test(l.san) && l.san.slice(1) === rest);
       if (same.length === 1) m = same[0];
+      else m = legal.bySan.get(toEnglish(san)) || null; // varias piezas llegan (o la lista no está): decide la letra
     }
     if (m) {
       if (san === 'O-O' || san === 'O-O-O') return { from: m.from, to: (san === 'O-O' ? 'g' : 'c') + m.from[1] };
@@ -148,11 +233,13 @@ export function resolveLineMove(line, legal, pieces, lang) {
     }
     // La línea es de otra posición (chess.com todavía no la actualizó): no dibujar flechas viejas
     if (line.hasMoveNumber && legal.turnWhite !== null && legal.turnWhite !== line.isWhite) return null;
-  } else {
-    const en = localizedSanToEnglish(san, lang);
-    if (en) moveText = en;
   }
-  return findMoveSource(moveText, isWhite, pieces);
+  // Último recurso, por geometría. Si la letra sigue sin entenderse no se dibuja nada
+  // (si no, una pieza desconocida se tomaría por un peón y la flecha saldría de cualquier lado).
+  const en = toEnglish(san);
+  const lead = splitPiece(en).lead;
+  if (lead && !/^[KQRBN]$/.test(lead) && !/^O/.test(en)) return null;
+  return findMoveSource(en, isWhite, pieces);
 }
 
 export function isWhiteMoveText(moveText) {

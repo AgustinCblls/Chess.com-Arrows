@@ -150,20 +150,29 @@ function figurineLetter(el) {
   return '';
 }
 
-// Texto de una jugada respetando el orden del DOM y convirtiendo figurines a letra
+function isFigurineEl(n) {
+  const cls = classNameOf(n);
+  return n.hasAttribute('data-figurine') || cls.indexOf('move-san-figurine') !== -1 || cls.indexOf('icon-font-chess') !== -1;
+}
+
+// Texto de una jugada respetando el orden del DOM y convirtiendo figurines a letra (en inglés)
 export function sanTextOf(el) {
   let out = '';
   const kids = el.childNodes;
   for (let i = 0; i < kids.length; i++) {
     const n = kids[i];
     if (n.nodeType === 3) out += n.nodeValue;
-    else if (n.nodeType === 1) {
-      const cls = classNameOf(n);
-      if (n.hasAttribute('data-figurine') || cls.indexOf('move-san-figurine') !== -1 || cls.indexOf('icon-font-chess') !== -1) out += figurineLetter(n);
-      else out += sanTextOf(n);
-    }
+    else if (n.nodeType === 1) out += isFigurineEl(n) ? figurineLetter(n) : sanTextOf(n);
   }
   return out;
+}
+
+// ¿La jugada usa un figurín (icono de pieza)? Entonces su letra ya está en inglés
+function hasFigurine(el) {
+  if (isFigurineEl(el)) return true;
+  const kids = el.children || [];
+  for (let i = 0; i < kids.length; i++) if (hasFigurine(kids[i])) return true;
+  return false;
 }
 
 // Composición antigua de la página de Análisis (respaldo)
@@ -185,8 +194,14 @@ function legacyEngineNodeText(firstMoveEl) {
   return combined.replace(/\s+/g, '');
 }
 
-function makeLine(idx, score, moveText) {
-  return { rank: idx + 1, score, moveText, isWhite: isWhiteMoveText(moveText), hasMoveNumber: hasMoveNumber(moveText) };
+// fullText: toda la línea como texto (sirve para saber en qué idioma están las letras)
+function makeLine(idx, score, moveText, firstMoveEl, comp) {
+  return {
+    rank: idx + 1, score, moveText,
+    isWhite: isWhiteMoveText(moveText), hasMoveNumber: hasMoveNumber(moveText),
+    figurine: !!firstMoveEl && hasFigurine(firstMoveEl),
+    fullText: comp ? (comp.textContent || '') : moveText
+  };
 }
 
 // Líneas del motor de chess.com (Events, Play y Análisis)
@@ -200,7 +215,7 @@ export function getAnalysisLines() {
     const score = scoreEl ? scoreEl.textContent.trim() : '';
     const firstMoveEl = comp.querySelector(SEL.evalLinesFirstNode) || comp.querySelector(SEL.evalLinesNode);
     const moveText = firstMoveEl ? sanTextOf(firstMoveEl).replace(/\s+/g, '') : '';
-    if (moveText) lines.push(makeLine(idx, score, moveText));
+    if (moveText) lines.push(makeLine(idx, score, moveText, firstMoveEl, comp));
   });
   if (lines.length > 0) return lines;
 
@@ -221,7 +236,7 @@ export function getAnalysisLines() {
       const legacy = legacyEngineNodeText(firstMoveEl);
       if (legacy) moveText = legacy;
     }
-    if (moveText) lines.push(makeLine(idx, score, moveText));
+    if (moveText) lines.push(makeLine(idx, score, moveText, firstMoveEl, comp));
   });
 
   return lines;
@@ -242,4 +257,30 @@ export function chessComDepth() {
 export function chessComEngineShowsDepth() {
   const el = document.querySelector(SEL.evalDepth);
   return !!el && /=\s*\d/.test(el.textContent || '');
+}
+
+// ─────────────────────────── Letras de pieza aprendidas de la página ───────────────────────────
+// La lista de jugadas de la partida (data-node="0-N", línea principal) está escrita en el idioma de la
+// página, y game.getHistorySANs() da las mismas jugadas en inglés. Comparándolas se aprende qué
+// significa cada letra en cualquier idioma, sin tabla. Las jugadas con figurín no enseñan nada (se omiten).
+let learnedCache = { key: '', map: null };
+export function learnedPieceLetters(boardEl, learn) {
+  const game = getGame(boardEl);
+  if (!game || typeof game.getHistorySANs !== 'function') return null;
+  let history;
+  try { history = game.getHistorySANs(); } catch (e) { return null; }
+  if (!Array.isArray(history) || !history.length) return learnedCache.map;
+  const nodes = document.querySelectorAll('[data-node^="0-"]');
+  const key = (document.documentElement.lang || '') + '|' + nodes.length + '|' + history.length;
+  if (key === learnedCache.key) return learnedCache.map;
+  const displayed = [];
+  nodes.forEach(n => {
+    const m = /^0-(\d+)$/.exec(n.getAttribute('data-node') || '');
+    if (!m || hasFigurine(n)) return;
+    displayed[parseInt(m[1], 10)] = (n.textContent || '').replace(/\s+/g, '');
+  });
+  const map = learn(displayed, history);
+  // Se conserva lo aprendido antes si esta vez no se pudo aprender nada (p. ej. lista con figurines)
+  learnedCache = { key, map: map || learnedCache.map };
+  return learnedCache.map;
 }

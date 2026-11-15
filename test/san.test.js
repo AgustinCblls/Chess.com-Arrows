@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import {
-  normalizeSan, findMoveSource, localizedSanToEnglish, resolveLineMove,
+  normalizeSan, findMoveSource, localizedSanToEnglish, resolveLineMove, detectNotation, learnPieceLetters, translateWithMap,
   parseScoreText, comparableScore, hasMoveNumber, isWhiteMoveText
 } from '../src/san.js';
 
@@ -128,5 +128,95 @@ describe('turno desde el texto', () => {
     expect(hasMoveNumber('3.e4')).toBe(true);
     expect(hasMoveNumber('Nf6')).toBe(false);
     expect(isWhiteMoveText('12...Nf6')).toBe(false);
+  });
+});
+
+// Posición del informe (Total Chess, jugada 25, juegan blancas): Rd1, Te1, Th1, Dh4.
+// En español "Re2" es rey a e2; en inglés "Re2" es torre a e2, y las dos son legales.
+describe('letras en otro idioma que también existen en inglés (R = Rey / Rook)', () => {
+  const legal = {
+    bySan: new Map([
+      ['Ke2', { from: 'd1', to: 'e2' }], ['Re2', { from: 'e1', to: 'e2' }],
+      ['Qf2', { from: 'h4', to: 'f2' }], ['Qg3', { from: 'h4', to: 'g3' }], ['Kc1', { from: 'd1', to: 'c1' }]
+    ]),
+    list: [], turnWhite: true
+  };
+  const es = ['25.Re2 Da2 26.Tb1 Ad8 27.Dg3 Tb7 28.Cf2 Aa5 29.Ae3 e5', '25.Df2 Da1+ 26.Re2 Dxb2 27.cxb4 Axb4 28.Rf1', '25.Dg3 Da1+ 26.Re2 Dxb2 27.Rf2 Dxc3 28.Rg2 Rb7 29.Tc1'];
+  const line = (moveText, extra) => Object.assign({ moveText, isWhite: true, hasMoveNumber: true }, extra);
+
+  it('detecta que las líneas están en español', () => {
+    expect(detectNotation(es, 'es')).toBe('local');
+    expect(detectNotation(['25.Re2Da226.Tb1Ad8'], 'es')).toBe('local'); // sin espacios entre jugadas
+    expect(detectNotation(['25.Re2 Qa2 26.Rb1 Bd8 27.Nf3'], 'es')).toBe('en');
+    expect(detectNotation(['25.Re2 e5'], 'es')).toBeNull();
+    expect(detectNotation(es, 'en')).toBe('local'); // hay letras que no son inglesas
+  });
+  it('página en español: "Re2" es el rey de d1 a e2, no la torre', () => {
+    expect(resolveLineMove(line('25.Re2'), legal, {}, 'es', 'local')).toEqual({ from: 'd1', to: 'e2' });
+    expect(resolveLineMove(line('25.Df2'), legal, {}, 'es', 'local')).toEqual({ from: 'h4', to: 'f2' });
+  });
+  it('sin saber el idioma de las líneas, manda el de la página', () => {
+    expect(resolveLineMove(line('25.Re2'), legal, {}, 'es', null)).toEqual({ from: 'd1', to: 'e2' });
+  });
+  it('página en español con líneas en inglés: "Re2" es la torre', () => {
+    expect(resolveLineMove(line('25.Re2'), legal, {}, 'es', 'en')).toEqual({ from: 'e1', to: 'e2' });
+  });
+  it('página en inglés: "Re2" es la torre', () => {
+    expect(resolveLineMove(line('25.Re2'), legal, {}, 'en', 'en')).toEqual({ from: 'e1', to: 'e2' });
+  });
+  it('la letra que sale de un figurín ya está en inglés', () => {
+    expect(resolveLineMove(line('25.Re2', { figurine: true }), legal, {}, 'es', 'local')).toEqual({ from: 'e1', to: 'e2' });
+  });
+  it('sin API del tablero también traduce antes de calcular por geometría', () => {
+    const pieces = { d1: 'wk', e1: 'wr', h1: 'wr', c8: 'bk' };
+    expect(resolveLineMove(line('25.Re2'), null, pieces, 'es', 'local')).toEqual({ from: 'd1', to: 'e2' });
+  });
+});
+
+describe('idiomas sin tabla: se aprende de la lista de jugadas de la página', () => {
+  // Misma posición del informe; lista de jugadas de la partida en ruso (Кр = rey, Ф = dama, Л = torre,
+  // С = alfil, К = caballo) y las mismas jugadas en inglés, como las da game.getHistorySANs()
+  const displayed = ['e4', 'g6', 'd4', 'Сg7', 'Кc3', 'd6', 'Сe3', 'Кf6', 'Фd2', 'O-O', 'Крd1', 'Лe8'];
+  const english = ['e4', 'g6', 'd4', 'Bg7', 'Nc3', 'd6', 'Be3', 'Nf6', 'Qd2', 'O-O', 'Kd1', 'Re8'];
+  const legal = {
+    bySan: new Map([['Ke2', { from: 'd1', to: 'e2' }], ['Re2', { from: 'e1', to: 'e2' }], ['Qf2', { from: 'h4', to: 'f2' }], ['Nf2', { from: 'h3', to: 'f2' }], ['Qg3', { from: 'h4', to: 'g3' }]]),
+    list: [{ san: 'Ke2', from: 'd1', to: 'e2' }, { san: 'Re2', from: 'e1', to: 'e2' }, { san: 'Qf2', from: 'h4', to: 'f2' }, { san: 'Nf2', from: 'h3', to: 'f2' }, { san: 'Qg3', from: 'h4', to: 'g3' }],
+    turnWhite: true
+  };
+  const line = moveText => ({ moveText, isWhite: true, hasMoveNumber: true });
+
+  it('aprende el significado de cada letra, incluso de dos letras', () => {
+    expect(learnPieceLetters(displayed, english)).toEqual({ 'С': 'B', 'К': 'N', 'Ф': 'Q', 'Кр': 'K', 'Л': 'R' });
+  });
+  it('no aprende nada de una lista que no corresponde', () => {
+    expect(learnPieceLetters(['Лe2', 'Лe2'], ['Re2', 'Ke2'])).toBeNull();
+    expect(learnPieceLetters(['e4'], ['e4'])).toBeNull();
+  });
+  it('traduce con lo aprendido, también la coronación', () => {
+    const map = learnPieceLetters(displayed, english);
+    expect(translateWithMap('Крe2', map)).toBe('Ke2');
+    expect(translateWithMap('e8=Ф', map)).toBe('e8=Q');
+    expect(translateWithMap('Жe2', map)).toBeNull();
+  });
+  it('si una sola pieza llega a la casilla, vale en cualquier idioma sin traducir', () => {
+    expect(resolveLineMove(line('25.Фg3'), legal, {}, 'ru', 'local', null)).toEqual({ from: 'h4', to: 'g3' });
+  });
+  it('si varias piezas llegan a la misma casilla, decide lo aprendido', () => {
+    const map = learnPieceLetters(displayed, english);
+    expect(resolveLineMove(line('25.Крe2'), legal, {}, 'ru', 'local', map)).toEqual({ from: 'd1', to: 'e2' });
+    expect(resolveLineMove(line('25.Лe2'), legal, {}, 'ru', 'local', map)).toEqual({ from: 'e1', to: 'e2' });
+    expect(resolveLineMove(line('25.Кf2'), legal, {}, 'ru', 'local', map)).toEqual({ from: 'h3', to: 'f2' });
+  });
+  it('lo aprendido manda sobre la tabla (español aprendido de la página)', () => {
+    const map = learnPieceLetters(['Ag7', 'Re2', 'Te8'], ['Bg7', 'Ke2', 'Re8']);
+    expect(resolveLineMove(line('25.Re2'), legal, {}, 'es', null, map)).toEqual({ from: 'd1', to: 'e2' });
+  });
+  it('sin forma de entender la letra, no dibuja nada (antes de tomarla por un peón)', () => {
+    expect(resolveLineMove(line('25.Крe2'), legal, {}, 'ru', 'local', null)).toBeNull();
+    expect(resolveLineMove(line('25.Крe2'), null, { d1: 'wk', e1: 'wr' }, 'ru', 'local', null)).toBeNull();
+  });
+  it('detecta letras no inglesas en idiomas sin tabla', () => {
+    expect(detectNotation(['25.Крe2 Фa2 26.Лb1'], 'ru')).toBe('local');
+    expect(detectNotation(['25.Ke2 Qa2 26.Rb1'], 'ru')).toBe('en');
   });
 });

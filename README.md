@@ -56,7 +56,7 @@ To update, download the ZIP again, replace the folder and press the reload icon 
 
 1. Open [chess.com/analysis](https://www.chess.com/analysis), or any game, and turn on chess.com's **Analysis** switch.
 2. The arrows appear on the board and follow every move.
-3. Optional: in the browser console (F12 → **Console**) you should see `[Top3 Arrows] v9.8.0 cargado.`
+3. Optional: in the browser console (F12 → **Console**) you should see `[Top3 Arrows] v9.8.1 cargado.`
 
 The settings are at the top of the **Analysis** tab of chess.com's own settings window (the gear next to the board). See [Settings](#settings).
 
@@ -67,6 +67,10 @@ The settings are at the top of the **Analysis** tab of chess.com's own settings 
 - Chrome and similar: `chrome://extensions` → **Remove** on the extension's card.
 
 The settings are stored in chess.com's local storage under `top3arrows_settings`; clearing chess.com's site data removes them.
+
+## What's new in 9.8.1
+
+- **Arrows no longer depend on the page language.** With chess.com in Spanish, `Re2` (king to e2) was drawn as a rook move, because `Re2` is also a valid English move. Lines are now read without relying on letters where possible: piece icons carry no language; when only one piece can reach the square the letter does not matter; when several can, the script learns what each letter means from the game's move list on the page (any language, including two-letter pieces such as Russian `Кр`), with built-in tables as a fallback. A letter that still cannot be understood is skipped instead of being drawn as a pawn move.
 
 ## What's new in 9.8.0
 
@@ -212,7 +216,7 @@ When you are not signed in, chess.com's board gear opens a sign-up prompt instea
 
 **Hide arrows worse by** works on every page: it compares chess.com's own numbers where it lists lines, and the script engine's numbers elsewhere.
 
-Where chess.com lists engine lines (Events, the Analysis page), the arrows follow that list: its first line is arrow 1, its second arrow 2, and so on, so the board always agrees with the panel next to it. If you ask for more arrows than chess.com lists (its own "Engine Lines" setting is usually 3), the script's engine adds the missing ones. With **Ignore chess.com's lines** on, every arrow comes from the script's engine instead, as on the Watch tab; its ranking can then differ from chess.com's panel, because the two engines search to different depths. Lines written with another language's piece letters (Spanish `Ce7`, German `Se7`) are understood. There is no threads slider: chess.com's game pages are not cross-origin isolated, so the browser only allows the single-threaded engine there.
+Where chess.com lists engine lines (Events, the Analysis page), the arrows follow that list: its first line is arrow 1, its second arrow 2, and so on, so the board always agrees with the panel next to it. If you ask for more arrows than chess.com lists (its own "Engine Lines" setting is usually 3), the script's engine adds the missing ones. With **Ignore chess.com's lines** on, every arrow comes from the script's engine instead, as on the Watch tab; its ranking can then differ from chess.com's panel, because the two engines search to different depths. Lines written in any language are understood: piece icons (figurines) carry no language; when only one piece can reach the square, the letter does not matter; and when several can (Spanish `Re2` is the king, English `Re2` is a rook), the script learns what each letter means by comparing the game's move list on the page with the same moves in English, with built-in tables for Spanish, French, German, Italian, Portuguese, Dutch, Polish and Turkish as a fallback. If a letter still cannot be understood, that arrow is not drawn rather than drawn wrong. There is no threads slider: chess.com's game pages are not cross-origin isolated, so the browser only allows the single-threaded engine there.
 
 ### `CONFIG` block
 
@@ -266,7 +270,7 @@ Using engine help in your own games breaks chess.com's Fair Play policy. This to
 
 Open the browser console on chess.com:
 
-- `[Top3 Arrows] v9.8.0 cargado.` confirms the script is running.
+- `[Top3 Arrows] v9.8.1 cargado.` confirms the script is running.
 - `__top3ArrowsHybrid.config()` returns a copy of the current settings (the console object is read-only, so the page cannot change them through it).
 - `__top3ArrowsHybrid.status()` shows where the arrows come from (`dom`, `engine`, `none` or `off`) and the engine's state.
 - If the arrows are slow to appear, `status().timeline` tells which stage took the time. It gives the milliseconds from the start of the page load to each step: `script`, `board`, `analysisOn`, `engineBoot`, `engineReady` and `arrows`.

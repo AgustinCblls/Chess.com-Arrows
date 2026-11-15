@@ -4,9 +4,9 @@ import { info, warn, log, diag, diagSave, diagText, diagClear, markOnce, timelin
 import { state, setScheduler } from './state.js';
 import {
   getMainBoard, getGame, getModeName, isFlipped, getBoardPieces, getLegalInfo, getPositionFen,
-  getAnalysisLines, hasLinesPanel, chessComEngineShowsDepth, chessComDepth, classNameOf
+  getAnalysisLines, hasLinesPanel, chessComEngineShowsDepth, chessComDepth, learnedPieceLetters, classNameOf
 } from './board.js';
-import { resolveLineMove, parseScoreText, comparableScore } from './san.js';
+import { resolveLineMove, detectNotation, learnPieceLetters, parseScoreText, comparableScore } from './san.js';
 import { fenTurnWhite, coordsToSquare } from './fen.js';
 import { formatEngineScore } from './uci.js';
 import {
@@ -118,9 +118,13 @@ const PAGE = (typeof unsafeWindow !== 'undefined' && unsafeWindow) ? unsafeWindo
     }
     const turnWhite = legal ? legal.turnWhite : null;
     const lang = document.documentElement.lang || '';
+    // Idioma de las letras, mirando todas las jugadas de todas las líneas (no solo la primera)
+    const notation = detectNotation(lines.filter(l => !l.figurine).map(l => l.fullText), lang);
+    // Qué significa cada letra en este idioma, aprendido de la lista de jugadas de la partida
+    const learned = learnedPieceLetters(boardEl, learnPieceLetters);
     const arrows = [];
     lines.forEach(line => {
-      const move = resolveLineMove(line, legal, pieces, lang);
+      const move = resolveLineMove(line, legal, pieces, lang, notation, learned);
       // chess.com a veces repite una jugada en dos líneas mientras las actualiza: se dibuja una sola vez
       if (!move || arrows.some(a => a.from === move.from && a.to === move.to)) return;
       const sc = parseScoreText(line.score);
