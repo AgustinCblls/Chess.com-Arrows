@@ -26,7 +26,7 @@ The Firefox add-on carries its own copy of Stockfish 19, so it works even if che
 
 **From the zip:**
 
-1. Download `chesscom-arrows-firefox-<version>.zip` from the [Releases](https://github.com/hediondom/Chess.com-Arrows/releases) page. Do not unzip it.
+1. Download `chesscom-arrows-firefox-<version>.zip` from the [Releases](https://github.com/AgustinCblls/Chess.com-Arrows/releases) page. Do not unzip it.
 2. Open `about:debugging#/runtime/this-firefox` in the address bar.
 3. Click **Load Temporary Add-on…** and choose the zip.
 4. Reload chess.com.
@@ -37,7 +37,7 @@ Firefox removes temporary add-ons when it closes, so this way is best for trying
 
 1. Install a userscript manager: [Tampermonkey](https://www.tampermonkey.net/) (Chrome, Edge, Firefox, Safari, Opera) or [Violentmonkey](https://violentmonkey.github.io/) (Chrome, Edge, Firefox).
 2. In Chrome and Edge, allow the manager to run userscripts: open `chrome://extensions`, open the manager's **Details** and turn on **Allow user scripts** (on older versions, turn on **Developer mode** at the top right of `chrome://extensions` instead).
-3. Open [the script](https://github.com/hediondom/Chess.com-Arrows/raw/main/chess_analysis_arrows.user.js). The manager shows an install page; click **Install**.
+3. Open [the script](https://github.com/AgustinCblls/Chess.com-Arrows/raw/main/chess_analysis_arrows.user.js). The manager shows an install page; click **Install**.
 4. Reload chess.com.
 
 The manager checks for new versions on its own. If chess.com cannot provide its engine, the userscript downloads Stockfish 19 from unpkg (and as a last resort stockfish.js 10 from cdnjs), each file pinned to an exact version and checked by hash before it runs.

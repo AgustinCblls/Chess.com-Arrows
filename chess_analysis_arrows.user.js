@@ -1,12 +1,12 @@
 // ==UserScript==
 // @name         Chess.com - Top 3 Analysis Arrows
-// @namespace    https://github.com/hediondom/Chess.com-Arrows
+// @namespace    https://github.com/AgustinCblls/Chess.com-Arrows
 // @version      9.8.1
 // @description  Top-3 engine move arrows for chess.com analysis and watched games. Uses chess.com's own Stockfish in a Web Worker, so no extra app or Stockfish install is needed.
-// @homepageURL  https://github.com/hediondom/Chess.com-Arrows
-// @supportURL   https://github.com/hediondom/Chess.com-Arrows/issues
-// @downloadURL  https://github.com/hediondom/Chess.com-Arrows/raw/main/chess_analysis_arrows.user.js
-// @updateURL    https://github.com/hediondom/Chess.com-Arrows/raw/main/chess_analysis_arrows.user.js
+// @homepageURL  https://github.com/AgustinCblls/Chess.com-Arrows
+// @supportURL   https://github.com/AgustinCblls/Chess.com-Arrows/issues
+// @downloadURL  https://github.com/AgustinCblls/Chess.com-Arrows/raw/main/chess_analysis_arrows.user.js
+// @updateURL    https://github.com/AgustinCblls/Chess.com-Arrows/raw/main/chess_analysis_arrows.user.js
 // @match        https://www.chess.com/*
 // @run-at       document-idle
 // @grant        none
